@@ -1,4 +1,4 @@
-# Remote MCP Server on Cloudflare
+# Remote MCP Server on Cloudflare Service
 
 Let's get a remote MCP server up-and-running on Cloudflare Workers complete with OAuth login!
 
