@@ -1,3 +1,5 @@
+// XanoClient: JSON-RPC integration for Cloudflare Worker
+// Uses fetch (not axios) for compatibility and performance
 
 export interface XanoTool {
   id: number;
@@ -71,6 +73,48 @@ export class XanoClient {
   // Get list of resources
   async getResources(sessionId: string): Promise<any[]> {
     return this.jsonRpcRequest<any[]>('resources/list', {}, sessionId);
+  }
+
+  // Create a session in Xano
+  async createSession(sessionId: string, userId: number, clientInfo: any): Promise<XanoSession | null> {
+    return this.jsonRpcRequest<XanoSession>(
+      'session/create',
+      {
+        session_id: sessionId,
+        user_id: userId,
+        client_info: clientInfo,
+        last_active: Date.now(),
+        status: 'active',
+      },
+      sessionId
+    );
+  }
+
+  // Log MCP request to Xano
+  async logMcpRequest(
+    sessionId: string,
+    userId: number,
+    method: string,
+    request: any,
+    response: any = null,
+    errorMessage = "",
+    processingTime = 0,
+    ipAddress = ""
+  ): Promise<boolean> {
+    return this.jsonRpcRequest<boolean>(
+      'logs/create',
+      {
+        session_id: sessionId,
+        user_id: userId,
+        method,
+        request,
+        response,
+        error_message: errorMessage,
+        processing_time: processingTime,
+        ip_address: ipAddress,
+      },
+      sessionId
+    );
   }
 
   // Initialize connection (get server info/capabilities)
