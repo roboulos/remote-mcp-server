@@ -1,19 +1,22 @@
-# Remote MCP Server on Cloudflare
+# Snappy MCP Server with Xano Integration
 
-Let's get a remote MCP server up-and-running on Cloudflare Workers complete with OAuth login!
+A remote MCP server built on Cloudflare Workers with Xano database integration for tool management, session tracking, and OAuth.
 
 ## Develop locally
 
 ```bash
 # clone the repository
-git clone git@github.com:cloudflare/ai.git
+git clone https://github.com/roboulos/remote-mcp-server.git
 
 # install dependencies
-cd ai
+cd remote-mcp-server
 npm install
 
+# Configure Xano API Key
+# Add your Xano API key to wrangler.jsonc in the XANO_API_KEY variable
+
 # run locally
-npx nx dev remote-mcp-server
+npm run dev
 ```
 
 You should be able to open [`http://localhost:8787/`](http://localhost:8787/) in your browser
@@ -67,11 +70,35 @@ When you open Claude a browser window should open and allow you to login. You sh
   <img src="img/claude-does-math-the-fancy-way.png" alt="Claude answers the prompt 'I seem to have lost my calculator and have run out of fingers. Could you use the math tool to add 23 and 19?' by invoking the MCP add tool" width="600"/>
 </div>
 
+## Xano Integration
+
+This MCP server uses Xano as its backend for:
+
+1. **Tool Management**: Define tools in Xano's `____mcp_tools` table and they will be automatically registered in the MCP server
+2. **Session Tracking**: All MCP sessions are tracked in the `___mcp_sessions` table
+3. **OAuth Authentication**: OAuth tokens and states are stored in Xano's `___oauth_tokens` and `___oauth_states` tables
+4. **Logging**: All MCP requests are logged in the `___mcp_logs` table
+
+### Setting up Xano
+
+1. Create a Xano project with the required tables (see database schema)
+2. Create API endpoints for:
+   - `/api/tools` - GET - List all tools
+   - `/api/tools/execute/{tool_name}` - POST - Execute a specific tool
+   - `/api/sessions` - POST - Create a new session
+   - `/api/sessions/update-activity` - PUT - Update session activity
+   - `/api/oauth/tokens` - POST - Store OAuth tokens
+   - `/api/oauth/tokens/{user_id}/{provider}` - GET - Get OAuth tokens
+   - `/api/oauth/states` - POST - Store OAuth states
+   - `/api/oauth/states/{state}` - GET - Validate OAuth states
+   - `/api/logs` - POST - Log MCP requests
+
 ## Deploy to Cloudflare
 
 1. `npx wrangler kv namespace create OAUTH_KV`
 2. Follow the guidance to add the kv namespace ID to `wrangler.jsonc`
-3. `npm run deploy`
+3. Add your Xano API key to the `XANO_API_KEY` variable in `wrangler.jsonc`
+4. `npm run deploy`
 
 ## Call your newly deployed remote MCP server from a remote MCP client
 
