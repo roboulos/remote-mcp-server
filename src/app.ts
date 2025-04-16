@@ -49,14 +49,15 @@ app.get("/authorize", async (c) => {
 	if (oauthReqInfo.state) {
 		try {
 			const xanoClient = getXanoClient(c);
-			await xanoClient.storeOAuthState(
-				oauthReqInfo.state,
-				userId,
-				"mcp",
-				oauthReqInfo.redirectUri || "",
-				oauthReqInfo.scope || "",
-				Date.now() + 3600000 // 1 hour expiry
-			);
+			// Store OAuth state via JSON-RPC (you must implement this method in your Xano backend, e.g. 'oauth/state/store')
+				await xanoClient.jsonRpcRequest('oauth/state/store', {
+					state: oauthReqInfo.state,
+					user_id: userId,
+					provider: "mcp",
+					redirect_uri: oauthReqInfo.redirectUri || "",
+					scope: oauthReqInfo.scope || "",
+					expires_at: Date.now() + 3600000
+				}, oauthReqInfo.state);
 		} catch (error) {
 			console.error("Failed to store OAuth state in Xano:", error);
 		}
@@ -120,7 +121,7 @@ app.post("/approve", async (c) => {
 
 	// The user must be successfully logged in and have approved the scopes, so we
 	// can complete the authorization request
-	const { redirectTo, token } = await c.env.OAUTH_PROVIDER.completeAuthorization({
+	const authResult = await c.env.OAUTH_PROVIDER.completeAuthorization({
 		request: oauthReqInfo,
 		userId: email,
 		metadata: {
@@ -131,6 +132,11 @@ app.post("/approve", async (c) => {
 			userEmail: email,
 		},
 	});
+	const redirectTo = authResult.redirectTo;
+	const token = (authResult as any).token;
+	if (!token) {
+		return c.html("Authorization failed: no token returned", 400);
+	}
 
 	// Store token in Xano
 	try {
@@ -139,17 +145,20 @@ app.post("/approve", async (c) => {
 		const userId = 1;
 		
 		const xanoClient = getXanoClient(c);
-		await xanoClient.storeOAuthToken(userId, "mcp", {
-			accessToken: token.accessToken,
-			refreshToken: token.refreshToken || "",
-			expiresAt: Date.now() + (token.expiresIn || 3600) * 1000,
-			scope: oauthReqInfo.scope || "",
-			providerUserId: email,
-			metadata: {
-				clientId: oauthReqInfo.clientId,
-				redirectUri: oauthReqInfo.redirectUri,
-			},
-		});
+		// Store OAuth token via JSON-RPC (you must implement this method in your Xano backend, e.g. 'oauth/token/store')
+			await xanoClient.jsonRpcRequest('oauth/token/store', {
+				user_id: userId,
+				provider: "mcp",
+				access_token: token.accessToken,
+				refresh_token: token.refreshToken || "",
+				expires_at: Date.now() + (token.expiresIn || 3600) * 1000,
+				scope: oauthReqInfo.scope || "",
+				provider_user_id: email,
+				metadata: {
+					client_id: oauthReqInfo.clientId,
+					redirect_uri: oauthReqInfo.redirectUri,
+				},
+			}, email);
 	} catch (error) {
 		console.error("Failed to store OAuth token in Xano:", error);
 	}

@@ -14,12 +14,14 @@ export class MyMCP extends McpAgent {
 		version: "1.0.0",
 	});
 
-	private xanoClient: XanoClient;
+	private xanoClient: XanoClient | undefined;
 
-	constructor() {
-		super();
+	private registeredTools = new Set<string>();
+
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, env);
 		// Will initialize the client with environment variables later in the request lifecycle
-		this.xanoClient = null;
+		this.xanoClient = undefined;
 	}
 	
 	private initXanoClient(env: any) {
@@ -28,7 +30,7 @@ export class MyMCP extends McpAgent {
 			const xanoApiKey = env.XANO_API_KEY || "";
 			this.xanoClient = new XanoClient(xanoBaseUrl, xanoApiKey);
 		}
-		return this.xanoClient;
+		return this.xanoClient!;
 	}
 
 	async init() {
@@ -42,53 +44,54 @@ export class MyMCP extends McpAgent {
 			try {
 				// Initialize Xano client with environment variables if needed
 				const xanoClient = this.initXanoClient(env);
-				
+				const sessionId = env?.sessionId || crypto.randomUUID();
 				// Execute the tool via Xano
-				const result = await xanoClient.executeTool(tool, params);
-				
+				const result = await xanoClient.executeTool(tool, params, sessionId);
 				return {
 					content: [{ type: "text", text: JSON.stringify(result) }],
 				};
 			} catch (error) {
-				console.error(`Error executing dynamic tool ${tool}:`, error);
+				console.error(`Error executing dynamic tool ${tool}:`, error instanceof Error ? error : String(error));
 				return {
-					content: [{ type: "text", text: `Error executing tool: ${error.message || "Unknown error"}` }],
+					content: [{ type: "text", text: `Error executing tool: ${error instanceof Error ? error.message : String(error)}` }],
 				};
 			}
 		});
 	}
 	
 	// Add a method to load and register all tools from Xano
-	async loadXanoTools(env: any) {
+	async loadXanoTools(env: any, sessionId: string) {
 		try {
 			const xanoClient = this.initXanoClient(env);
-			const tools = await xanoClient.getTools();
+			const tools = await xanoClient.getTools(sessionId);
 			
 			for (const tool of tools) {
 				// Check if tool is already registered
-				const isToolRegistered = this.server.getMethods().find(m => m === tool.name) !== undefined;
+				const isToolRegistered = this.registeredTools.has(tool.name);
 				if (tool.active && !isToolRegistered) {
 					// Convert Xano's JSON schema to Zod schema
 					const paramSchema = this.convertJsonSchemaToZod(tool.input_schema);
 					
 					// Register the tool with a handler that delegates to Xano
-					this.server.tool(tool.name, paramSchema, async (params) => {
+					this.server.tool(tool.name, paramSchema, async (params, env) => {
 						try {
-							const result = await xanoClient.executeTool(tool.name, params);
+							const sessionId = env?.sessionId || crypto.randomUUID();
+							const result = await xanoClient.executeTool(tool.name, params, sessionId);
 							return {
 								content: [{ type: "text", text: JSON.stringify(result) }],
 							};
 						} catch (error) {
-							console.error(`Error executing tool ${tool.name}:`, error);
+							console.error(`Error executing tool ${tool.name}:`, error instanceof Error ? error : String(error));
 							return {
-								content: [{ type: "text", text: `Error executing tool: ${error.message || "Unknown error"}` }],
+								content: [{ type: "text", text: `Error executing tool: ${error instanceof Error ? error.message : String(error)}` }],
 							};
 						}
 					});
+					this.registeredTools.add(tool.name);
 				}
 			}
 		} catch (error) {
-			console.error("Failed to load tools from Xano:", error);
+			console.error("Failed to load tools from Xano:", error instanceof Error ? error : String(error));
 		}
 	}
 
@@ -146,47 +149,25 @@ export class MyMCP extends McpAgent {
 		const xanoClient = this.initXanoClient(env);
 		
 		try {
-			// Track session
-			await xanoClient.createSession(sessionId, userId, {
-				userAgent: request.headers.get("User-Agent"),
-				ip: request.headers.get("CF-Connecting-IP"),
-			});
-			
+			// Initialize session via JSON-RPC (if needed, e.g., by calling initialize)
+			await xanoClient.initialize(sessionId); // Optionally pass any required params
+
 			// Load Xano tools if this is the first request
-			await this.loadXanoTools(env);
-			
-			// Process the request
-			const response = await super.onRequest(request, env, ctx);
-			
-			// Log the request
-			const processingTime = Date.now() - startTime;
-			await xanoClient.logMcpRequest(
-				sessionId,
-				userId,
-				request.method,
-				{ url: request.url, headers: Object.fromEntries(request.headers.entries()) },
-				{ status: response.status },
-				"",
-				processingTime,
-				request.headers.get("CF-Connecting-IP") || ""
-			);
-			
-			return response;
+			await this.loadXanoTools(env, sessionId);
+
+			// Process the request using the MCP server
+			if (typeof (this.server as any).handleRequest === 'function') {
+				const response = await (this.server as any).handleRequest(request, env, ctx);
+				// Optionally, log the request via JSON-RPC if you have a method for it on your Xano backend.
+				// await xanoClient.jsonRpcRequest('log/request', { ... }, sessionId);
+				return response;
+			} else {
+				throw new Error('McpServer does not expose a handleRequest/onRequest method. Please check the SDK for the correct handler.');
+			}
 		} catch (error) {
-			// Log error
-			const processingTime = Date.now() - startTime;
-			await xanoClient.logMcpRequest(
-				sessionId,
-				userId,
-				request.method,
-				{ url: request.url, headers: Object.fromEntries(request.headers.entries()) },
-				null,
-				error.message || "Unknown error",
-				processingTime,
-				request.headers.get("CF-Connecting-IP") || ""
-			);
-			
-			throw error;
+			// Optionally, log the error via JSON-RPC if you have a method for it on your Xano backend.
+			// await xanoClient.jsonRpcRequest('log/error', { ... }, sessionId);
+			throw error instanceof Error ? error : new Error(String(error));
 		}
 	}
 }
