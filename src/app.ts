@@ -133,36 +133,12 @@ app.post("/approve", async (c) => {
 			userEmail: email,
 		},
 	});
-	// Fallback: synthesize a dummy token if needed (for dev/demo)
-	let token = (authResult as any).token;
-	if (!token) {
-		token = { accessToken: "demo-access-token", expiresIn: 3600 };
-	}
+
+	// Redirect URL from completed authorization
 	const redirectTo = authResult.redirectTo;
 
-	// Store token in Xano
-	try {
-		// To get user ID, you would typically look up the user by email in your database
-		// For this demo, we'll use a hardcoded user ID
-		
-		const xanoClient = getXanoClient(c);
-		// Store OAuth token via JSON-RPC (you must implement this method in your Xano backend, e.g. 'oauth/token/store')
-			await xanoClient.jsonRpcRequest('oauth/token/store', {
-				user_id: userId,
-				provider: "mcp",
-				access_token: token.accessToken,
-				refresh_token: token.refreshToken || "",
-				expires_at: Date.now() + (token.expiresIn || 3600) * 1000,
-				scope: oauthReqInfo.scope || "",
-				provider_user_id: email,
-				metadata: {
-					client_id: oauthReqInfo.clientId,
-					redirect_uri: oauthReqInfo.redirectUri,
-				},
-			}, email);
-	} catch (error) {
-		console.error("Failed to store OAuth token in Xano:", error);
-	}
+	// TODO: Persist the OAuth grant in Xano once the appropriate endpoint
+	// (e.g., `oauth/token/store`) is available and returning 2xx.
 
 	// Set a cookie with the user information
 	c.header("Set-Cookie", `session=${encodeURIComponent(email)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`);
