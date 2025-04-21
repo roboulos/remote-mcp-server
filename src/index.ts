@@ -163,11 +163,22 @@ const handler: ExportedHandler = {
   async fetch(request: Request, env: Record<string, unknown>, ctx: ExecutionContext): Promise<Response> {
     // Adapt the arguments as needed for OAuthProvider
     // All types are now explicit and compatible
-    return await oauthProvider.fetch(
-      request,
-      env,
-      ctx
-    );
+    const response = await oauthProvider.fetch(request, env, ctx);
+    if (response.status >= 400) {
+      // Clone and log error details for debugging
+      try {
+        const cloned = response.clone();
+        const bodyText = await cloned.text();
+        console.error("OAuthProvider error", {
+          url: new URL(request.url).pathname,
+          status: response.status,
+          body: bodyText,
+        });
+      } catch (e) {
+        console.error("Failed to read error body:", e);
+      }
+    }
+    return response;
   }
 };
 
