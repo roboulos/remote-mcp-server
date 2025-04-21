@@ -32,8 +32,7 @@
 	},
 	"assets": { "directory": "./static/", "binding": "ASSETS" },
 	"vars": {
-		"XANO_BASE_URL": "https://x8ki-letl-twmt.n7.xano.io/api:snappy",
-		"XANO_API_KEY": ""
+		"XANO_BASE_URL": "https://x8ki-letl-twmt.n7.xano.io/api:snappy"
 	},
 	"env": {
 		"development": {
