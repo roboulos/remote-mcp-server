@@ -2,7 +2,6 @@ import app from "./app";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { XanoClient } from "./xano-client";
 
 // Configuration for the Xano API comes from environment variables
@@ -145,41 +144,20 @@ export class MyMCP extends McpAgent {
   }
 }
 
-// Export the OAuth handler as the default
-// Export the OAuth handler as the default for the Worker
-const oauthProvider = new OAuthProvider({
-  apiRoute: "/sse",
-  apiHandler: MyMCP.mount("/sse"),
-  defaultHandler: app,
-  authorizeEndpoint: "/authorize",
-  tokenEndpoint: "/token",
-  clientRegistrationEndpoint: "/register"
-});
+// Export a simple router: /sse handled by MCP durable object, everything else by app
 
-// Zero-error, fully type-safe Cloudflare Worker export
 import type { ExportedHandler, ExecutionContext } from '@cloudflare/workers-types';
+
+const mcpHandler = MyMCP.mount("/sse");
 
 const handler: ExportedHandler = {
   async fetch(request: Request, env: Record<string, unknown>, ctx: ExecutionContext): Promise<Response> {
-    // Adapt the arguments as needed for OAuthProvider
-    // All types are now explicit and compatible
-    const response = await oauthProvider.fetch(request, env, ctx);
-    if (response.status >= 400) {
-      // Clone and log error details for debugging
-      try {
-        const cloned = response.clone();
-        const bodyText = await cloned.text();
-        console.error("OAuthProvider error", {
-          url: new URL(request.url).pathname,
-          status: response.status,
-          body: bodyText,
-        });
-      } catch (e) {
-        console.error("Failed to read error body:", e);
-      }
+    const { pathname } = new URL(request.url);
+    if (pathname.startsWith("/sse")) {
+      return mcpHandler.fetch(request, env as any, ctx);
     }
-    return response;
-  }
+    return (app as any).fetch(request, env, ctx);
+  },
 };
 
 export default handler;
