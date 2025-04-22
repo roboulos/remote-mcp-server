@@ -62,19 +62,42 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
     this.server.tool(
       "generateImage",
       {
-        prompt: z.string(),
-        model_name: z.string().optional(),
-        modifier_name: z.string().optional(),
-        modifier_scale: z.string().optional(),
-        image_size: z.string().default("square_hd"),
-        cfg: z.string().default("7"),
-        num_images: z.string().default("1"),
+        prompt: z.string().describe(
+          "The image description in first-person POV style: photorealistic HDR, anatomically correct, full-body framing, detailing clothing, context, lighting, framing, and subject expression."
+        ),
+        model_name: z.enum([
+          "Anveshi",
+          "Adrianna",
+          "Franceska",
+          "Austin",
+          "Sarai",
+          "Amber",
+          "Wendy",
+          "Jane",
+          "Casca"
+        ]).describe("The model to use for image generation."),
+        modifier_name: z.enum([
+          "None",
+          "Anime",
+          "Cartoon",
+          "Noir",
+          "Cyberpunk",
+          "Fantasy"
+        ]).default("None").describe("The modifier to apply (optional)."),
+        modifier_scale: z.number().min(0).max(10).default(5).describe("Modifier scale (0-10, default 5)."),
+        image_size: z.enum([
+          "square_hd",
+          "portrait_hd",
+          "landscape_hd"
+        ]).default("square_hd").describe("Image size (default: square_hd)."),
+        cfg: z.string().default("7").describe("CFG value (default 7)."),
+        num_images: z.string().default("1").describe("Number of images to generate (default 1)."),
       },
       async ({
         prompt,
-        model_name = "",
-        modifier_name = "",
-        modifier_scale = "",
+        model_name,
+        modifier_name = "None",
+        modifier_scale = 5,
         image_size = "square_hd",
         cfg = "7",
         num_images = "1",
