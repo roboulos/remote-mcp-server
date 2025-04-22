@@ -2,32 +2,28 @@ import app from "./app";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { XanoClient } from "./xano-client";
+
 
 // Configuration for the Xano API comes from environment variables
 // This will be set in wrangler.jsonc and accessed through env
 
-export class MyMCP extends McpAgent {
+interface MyMCPState {
+  counter?: number;
+}
+
+export class MyMCP extends McpAgent<unknown, MyMCPState> {
   server = new McpServer({
     name: "Snappy MCP",
     version: "1.0.0",
   });
 
-  private xanoClient: XanoClient | undefined;
-  private registeredTools = new Set<string>();
+
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
   }
 
-  initXanoClient(env: any) {
-    if (!this.xanoClient) {
-      const xanoBaseUrl = env.XANO_BASE_URL || "https://x8ki-letl-twmt.n7.xano.io/api:snappy";
-      const xanoApiKey = env.XANO_API_KEY || "";
-      this.xanoClient = new XanoClient(xanoBaseUrl, xanoApiKey);
-    }
-    return this.xanoClient!;
-  }
+
 
   async init() {
     // Register a basic add tool directly (as a fallback)
@@ -61,130 +57,63 @@ export class MyMCP extends McpAgent {
         };
       }
     );
-  }
 
-  // Add a method to load and register all tools from Xano
-  async loadXanoTools(env: any, sessionId: string) {
-    try {
-      const xanoClient = this.initXanoClient(env);
-      const tools = await xanoClient.getTools(sessionId);
-      for (const tool of tools) {
-        if (tool.active && !this.registeredTools.has(tool.name)) {
-          const paramSchema = this.convertJsonSchemaToZod(tool.input_schema);
-          // Register the tool with a handler that delegates to Xano
-          this.server.tool(tool.name, paramSchema, async (params, env) => {
-            try {
-              const result = await xanoClient.executeTool(tool.name, params, sessionId);
-              return {
-                content: [{ type: "text", text: JSON.stringify(result) }],
-              };
-            } catch (error) {
-              return {
-                content: [{ type: "text", text: `Error executing tool: ${error instanceof Error ? error.message : String(error)}` }],
-              };
-            }
-          });
-          this.registeredTools.add(tool.name);
+    // Register a tool to generate an image via Xano API
+    this.server.tool(
+      "generateImage",
+      {
+        prompt: z.string(),
+        model_name: z.string().optional(),
+        modifier_name: z.string().optional(),
+        modifier_scale: z.string().optional(),
+        image_size: z.string().default("square_hd"),
+        cfg: z.string().default("7"),
+        num_images: z.string().default("1"),
+      },
+      async ({
+        prompt,
+        model_name = "",
+        modifier_name = "",
+        modifier_scale = "",
+        image_size = "square_hd",
+        cfg = "7",
+        num_images = "1",
+      }) => {
+        const response = await fetch("https://xnwv-v1z6-dvnr.n7c.xano.io/api:_WUcacrv/generate-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt,
+            model_name,
+            modifier_name,
+            modifier_scale,
+            image_size,
+            cfg,
+            num_images,
+          }),
+        });
+        if (!response.ok) {
+          return { content: [{ type: "text", text: `Error: ${response.statusText}` }] };
         }
+        const data = await response.json();
+        // You can adapt this to return image URLs or base64 as needed
+        return { content: [{ type: "text", text: JSON.stringify(data) }] };
       }
-    } catch (error) {
-      console.error("Failed to load tools from Xano:", error instanceof Error ? error : String(error));
-    }
+    );
   }
 
-  // Helper method to convert JSON schema to Zod schema
-  // This is a simplified version and might need to be expanded based on your schemas
-  private convertJsonSchemaToZod(jsonSchema: any) {
-    const schema: Record<string, any> = {};
-    if (jsonSchema && jsonSchema.properties) {
-      Object.entries(jsonSchema.properties).forEach(([key, value]: [string, any]) => {
-        switch (value.type) {
-          case "string":
-            schema[key] = z.string();
-            break;
-          case "number":
-            schema[key] = z.number();
-            break;
-          case "boolean":
-            schema[key] = z.boolean();
-            break;
-          case "object":
-            schema[key] = z.object(this.convertJsonSchemaToZod(value));
-            break;
-          case "array":
-            if (value.items && value.items.type === "string") {
-              schema[key] = z.array(z.string());
-            } else if (value.items && value.items.type === "number") {
-              schema[key] = z.array(z.number());
-            } else {
-              schema[key] = z.array(z.any());
-            }
-            break;
-          default:
-            schema[key] = z.any();
-        }
-        if (jsonSchema.required && !jsonSchema.required.includes(key)) {
-          schema[key] = schema[key].optional();
-        }
-      });
-    }
-    return schema;
-  }
-
-  // Override the onRequest method to add session tracking and logging
-  async onRequest(request: Request, env: any, ctx: any): Promise<Response> {
-    const sessionId = request.headers.get("X-Session-ID") || crypto.randomUUID();
-    const userId = parseInt(request.headers.get("X-User-ID") || "0", 10);
-    const startTime = Date.now();
-    const xanoClient = this.initXanoClient(env);
-    try {
-      await xanoClient.createSession(sessionId, userId, {
-        userAgent: request.headers.get("User-Agent"),
-        ip: request.headers.get("CF-Connecting-IP"),
-      });
-      await this.loadXanoTools(env, sessionId);
-      const response = await (this.server as any).handleRequest(request, env, ctx);
-      await xanoClient.logMcpRequest(
-        sessionId,
-        userId,
-        request.method,
-        { url: request.url, headers: Object.fromEntries(request.headers.entries()) },
-        { status: response.status },
-        "",
-        Date.now() - startTime,
-        request.headers.get("CF-Connecting-IP") || ""
-      );
-      return response;
-    } catch (error) {
-      await xanoClient.logMcpRequest(
-        sessionId,
-        userId,
-        request.method,
-        { url: request.url, headers: Object.fromEntries(request.headers.entries()) },
-        null,
-        error instanceof Error ? error.message : String(error),
-        Date.now() - startTime,
-        request.headers.get("CF-Connecting-IP") || ""
-      );
-      throw error;
-    }
-  }
 }
 
-// Export a simple router: /sse handled by MCP durable object, everything else by app
+import OAuthProvider from "@cloudflare/workers-oauth-provider";
 
-import type { ExportedHandler, ExecutionContext } from '@cloudflare/workers-types';
-
-const mcpHandler = MyMCP.mount("/sse");
-
-const handler: ExportedHandler = {
-  async fetch(request: Request, env: Record<string, unknown>, ctx: ExecutionContext): Promise<Response> {
-    const { pathname } = new URL(request.url);
-    if (pathname.startsWith("/sse")) {
-      return mcpHandler.fetch(request, env as any, ctx);
-    }
-    return (app as any).fetch(request, env, ctx);
-  },
-};
-
-export default handler;
+// Export the OAuth handler as the default (Cloudflare best practice)
+export default new OAuthProvider({
+  apiRoute: "/sse",
+  // @ts-ignore
+  apiHandler: MyMCP.mount("/sse"),
+  // @ts-ignore
+  defaultHandler: app,
+  authorizeEndpoint: "/authorize",
+  tokenEndpoint: "/token",
+  clientRegistrationEndpoint: "/register",
+});
