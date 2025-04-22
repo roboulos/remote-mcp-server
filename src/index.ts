@@ -34,6 +34,11 @@ export class MyMCP extends McpAgent {
     this.server.tool("add", { a: z.number(), b: z.number() }, async ({ a, b }) => ({
       content: [{ type: "text", text: String(a + b) }],
     }));
+
+    // Register a greet tool (local, Cloudflare-style)
+    this.server.tool("greet", { name: z.string() }, async ({ name }) => ({
+      content: [{ type: "text", text: `Hello, ${name}!` }],
+    }));
   }
 
   // Add a method to load and register all tools from Xano
