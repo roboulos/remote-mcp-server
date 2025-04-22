@@ -39,6 +39,28 @@ export class MyMCP extends McpAgent {
     this.server.tool("greet", { name: z.string() }, async ({ name }) => ({
       content: [{ type: "text", text: `Hello, ${name}!` }],
     }));
+
+    // Register a persistent counter resource
+    this.server.resource(
+      "counter",
+      "mcp://resource/counter",
+      (uri) => ({
+        contents: [{ uri: uri.href, text: String(this.state.counter ?? 0) }],
+      })
+    );
+
+    // Register a tool to increment the counter
+    this.server.tool(
+      "incrementCounter",
+      { amount: z.number().default(1) },
+      async ({ amount }) => {
+        const newValue = (this.state.counter ?? 0) + amount;
+        this.setState({ ...this.state, counter: newValue });
+        return {
+          content: [{ type: "text", text: `Counter incremented by ${amount}. New value: ${newValue}` }],
+        };
+      }
+    );
   }
 
   // Add a method to load and register all tools from Xano
