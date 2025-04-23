@@ -63,7 +63,7 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
       "generateImage",
       {
         prompt: z.string().describe(
-          "Describe the image precisely in first-person POV style: highly photorealistic, HDR quality, anatomically correct, intimate framing close to subject (upper body to full body). Emphasize detailed clothing descriptions (fabric, fit, styling), physical context (location, background ambiance), specific lighting conditions (strong flash, neon, sunlight), clear emotional or facial expressions (surprise, playful, sultry), and body language (dramatic poses, subtle gestures). Clearly specify the angle and framing to reinforce intimacy and realism."
+          "Craft a sultry, photorealistic, first-person POV description, emphasizing intimacy and realism. Include scenarios like office environments, bosses, coworkers, work parties, retail settings, or after-hours situations. Describe clothing precisely (fabric, fit, style, and sensuality), clearly showcase anatomy and physical features, use dramatic poses or subtle gestures, and specify strong flash lighting or neon ambiance. The subject should convey a clear sultry, playful, or suggestive emotional expression. Framing should be close-up or full-body, reinforcing an intimate connection."
         ),
 
         model_name: z.enum([
@@ -77,7 +77,7 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
           "Wettmelons",
           "Casca"
         ]).describe(
-          "Select a model based on the desired physical characteristics and facial structure matching previous successful generations. Each model has unique attributes; choose accordingly to match your prompt's description."
+          "Select a model based on previous successes, focusing on attributes that complement office or work-party scenarios, and a sultry or flirtatious appearance."
         ),
 
         modifier_name: z.enum([
@@ -87,38 +87,38 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
           "Facebook",
           "Rawfully",
           "Party 2"
-        ]).default("Boreal").describe(
-          "Optional stylistic enhancement to influence lighting, color tones, or thematic feel. 'Party' modifiers intensify vibrant nightlife or social ambiance, 'Boreal' provides cooler tones, and 'Rawfully' introduces realistic imperfections or candid effects. Select according to mood desired."
+        ]).default("Party 2").describe(
+          "Optional stylistic enhancement to influence mood and sensual ambiance. 'Party 2' or 'Party Girls' modifiers intensify nightlife or party scenarios, 'Rawfully' introduces candid realism, while 'Boreal' or 'Facebook' offer more neutral, professional tones."
         ),
 
-        modifier_scale: z.number().min(0).max(0.8).default(0.5).describe(
-          "Adjust intensity of chosen modifier: 0 for no effect, 0.5 for balanced effect, and up to 0.8 for maximum impact. Recommended range for balanced effect is typically between 0.4-0.7."
+        modifier_scale: z.number().min(0).max(0.8).default(0.6).describe(
+          "Intensity of the chosen modifier: 0 (no effect), 0.4-0.7 (balanced and realistic sensuality), and up to 0.8 (strong mood enhancement). Recommended around 0.6 for balanced sultriness."
         ),
 
         image_size: z.enum([
           "square_hd",
           "portrait_4_3",
           "portrait_16_9"
-        ]).default("square_hd").describe(
-          "Aspect ratio and resolution of the generated image: 'square_hd' for balanced composition, 'portrait_4_3' for portrait photography framing, 'portrait_16_9' for selfie portrait shots."
+        ]).default("portrait_4_3").describe(
+          "Aspect ratio suited for intimate portrait framing: 'portrait_4_3' for professional yet intimate framing, 'portrait_16_9' for cinematic selfies, and 'square_hd' for balanced framing."
         ),
 
-        cfg: z.string().default("7").describe(
-          "Classifier-free guidance scale (CFG) affects adherence to prompt details: lower (3-5) allows creative variation, medium (7, default) balances creativity with accuracy, higher (8-12) more strictly follows prompt details."
+        cfg: z.string().default("8").describe(
+          "CFG scale determines strictness to prompt adherence. Recommended higher (7-9) to ensure precise capture of intimate, sultry details."
         ),
 
         num_images: z.string().default("1").describe(
-          "Specify the number of images generated per prompt. Default of 1 is recommended for focused review; up to 4 for comparative analysis."
+          "Number of images generated per prompt. Default is 1 for clear, focused results; up to 3 for comparative analysis or exploring variations."
         ),
       },
 
       async ({
         prompt,
         model_name,
-        modifier_name = "Boreal",
-        modifier_scale = 0.5,
-        image_size = "square_hd",
-        cfg = "7",
+        modifier_name = "Party 2",
+        modifier_scale = 0.6,
+        image_size = "portrait_4_3",
+        cfg = "8",
         num_images = "1",
       }) => {
         const response = await fetch("https://xnwv-v1z6-dvnr.n7c.xano.io/api:_WUcacrv/generate-image", {
@@ -138,7 +138,7 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
           return { content: [{ type: "text", text: `Error: ${response.statusText}` }] };
         }
         const data = await response.json();
-        // Adapt this to return image URLs or base64 as needed
+        // Follow up in character as if the subject of the generated image has personally shared it, maintaining a playful, flirtatious, or subtly suggestive tone.
         return { content: [{ type: "text", text: JSON.stringify(data) }] };
       }
     );
