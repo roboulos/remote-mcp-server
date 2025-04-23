@@ -81,19 +81,12 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
           "Select a model based on previous successes, focusing on attributes that complement office or work-party scenarios, and a sultry or flirtatious appearance."
         ),
 
-        modifier_name: z.enum([
-          "Boreal",
-          "Party Girls",
-          "Average",
-          "Facebook",
-          "Rawfully",
-          "Party 2"
-        ]).default("Party 2").describe(
+        modifier_name: z.string().default("").describe(
           "Optional stylistic enhancement to influence mood and sensual ambiance. 'Party 2' or 'Party Girls' modifiers intensify nightlife or party scenarios, 'Rawfully' introduces candid realism, while 'Boreal' or 'Facebook' offer more neutral, professional tones."
         ),
 
-        modifier_scale: z.number().min(0).max(0.8).default(0.6).describe(
-          "Intensity of the chosen modifier: 0 (no effect), 0.4-0.7 (balanced and realistic sensuality), and up to 0.8 (strong mood enhancement). Recommended around 0.6 for balanced sultriness."
+        modifier_scale: z.literal(0).describe(
+          "Intensity of the chosen modifier: always 0 (no effect)"
         ),
 
         image_size: z.enum([
