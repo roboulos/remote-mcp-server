@@ -75,6 +75,7 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
           "Ashley",
           "Wendy",
           "Wettmelons",
+          "Lily",
           "Casca"
         ]).describe(
           "Select a model based on previous successes, focusing on attributes that complement office or work-party scenarios, and a sultry or flirtatious appearance."
