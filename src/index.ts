@@ -91,8 +91,8 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
           "Optional stylistic enhancement to influence lighting, color tones, or thematic feel. 'Party' modifiers intensify vibrant nightlife or social ambiance, 'Boreal' provides cooler tones, and 'Rawfully' introduces realistic imperfections or candid effects. Select according to mood desired."
         ),
 
-        modifier_scale: z.number().min(0).max(10).default(5).describe(
-          "Adjust intensity of chosen modifier: 0 for no effect, 5 for balanced effect, and up to 10 for maximum impact. Recommended range for subtle realism is typically between 4-7."
+        modifier_scale: z.number().min(0).max(0.8).default(0.5).describe(
+          "Adjust intensity of chosen modifier: 0 for no effect, 0.5 for balanced effect, and up to 0.8 for maximum impact. Recommended range for balanced effect is typically between 0.4-0.7."
         ),
 
         image_size: z.enum([
@@ -100,11 +100,11 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
           "portrait_4_3",
           "portrait_16_9"
         ]).default("square_hd").describe(
-          "Aspect ratio and resolution of the generated image: 'square_hd' for balanced composition, 'portrait_4_3' for classic photography framing, 'portrait_16_9' for cinematic wide portrait shots."
+          "Aspect ratio and resolution of the generated image: 'square_hd' for balanced composition, 'portrait_4_3' for portrait photography framing, 'portrait_16_9' for selfie portrait shots."
         ),
 
         cfg: z.string().default("7").describe(
-          "Classifier-free guidance scale (CFG) affects adherence to prompt details: lower (3-5) allows creative variation, medium (7, default) balances creativity with accuracy, higher (8-12) strictly follows prompt details."
+          "Classifier-free guidance scale (CFG) affects adherence to prompt details: lower (3-5) allows creative variation, medium (7, default) balances creativity with accuracy, higher (8-12) more strictly follows prompt details."
         ),
 
         num_images: z.string().default("1").describe(
@@ -116,7 +116,7 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
         prompt,
         model_name,
         modifier_name = "Boreal",
-        modifier_scale = 5,
+        modifier_scale = 0.5,
         image_size = "square_hd",
         cfg = "7",
         num_images = "1",
