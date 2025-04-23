@@ -63,40 +63,59 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
       "generateImage",
       {
         prompt: z.string().describe(
-          "The image description in first-person POV style: photorealistic HDR, anatomically correct, full-body framing, detailing clothing, context, lighting, framing, and subject expression."
+          "Describe the image precisely in first-person POV style: highly photorealistic, HDR quality, anatomically correct, intimate framing close to subject (upper body to full body). Emphasize detailed clothing descriptions (fabric, fit, styling), physical context (location, background ambiance), specific lighting conditions (strong flash, neon, sunlight), clear emotional or facial expressions (surprise, playful, sultry), and body language (dramatic poses, subtle gestures). Clearly specify the angle and framing to reinforce intimacy and realism."
         ),
+
         model_name: z.enum([
           "Anveshi",
           "Adrianna",
           "Franceska",
           "Austin",
-          "Sarai",
-          "Amber",
+          "Rebecca",
+          "Ashley",
           "Wendy",
-          "Jane",
+          "Wettmelons",
           "Casca"
-        ]).describe("The model to use for image generation."),
+        ]).describe(
+          "Select a model based on the desired physical characteristics and facial structure matching previous successful generations. Each model has unique attributes; choose accordingly to match your prompt's description."
+        ),
+
         modifier_name: z.enum([
-          "None",
-          "Anime",
-          "Cartoon",
-          "Noir",
-          "Cyberpunk",
-          "Fantasy"
-        ]).default("None").describe("The modifier to apply (optional)."),
-        modifier_scale: z.number().min(0).max(10).default(5).describe("Modifier scale (0-10, default 5)."),
+          "Boreal",
+          "Party Girls",
+          "Average",
+          "Facebook",
+          "Rawfully",
+          "Party 2"
+        ]).default("Boreal").describe(
+          "Optional stylistic enhancement to influence lighting, color tones, or thematic feel. 'Party' modifiers intensify vibrant nightlife or social ambiance, 'Boreal' provides cooler tones, and 'Rawfully' introduces realistic imperfections or candid effects. Select according to mood desired."
+        ),
+
+        modifier_scale: z.number().min(0).max(10).default(5).describe(
+          "Adjust intensity of chosen modifier: 0 for no effect, 5 for balanced effect, and up to 10 for maximum impact. Recommended range for subtle realism is typically between 4-7."
+        ),
+
         image_size: z.enum([
           "square_hd",
-          "portrait_hd",
-          "landscape_hd"
-        ]).default("square_hd").describe("Image size (default: square_hd)."),
-        cfg: z.string().default("7").describe("CFG value (default 7)."),
-        num_images: z.string().default("1").describe("Number of images to generate (default 1)."),
+          "portrait_4_3",
+          "portrait_16_9"
+        ]).default("square_hd").describe(
+          "Aspect ratio and resolution of the generated image: 'square_hd' for balanced composition, 'portrait_4_3' for classic photography framing, 'portrait_16_9' for cinematic wide portrait shots."
+        ),
+
+        cfg: z.string().default("7").describe(
+          "Classifier-free guidance scale (CFG) affects adherence to prompt details: lower (3-5) allows creative variation, medium (7, default) balances creativity with accuracy, higher (8-12) strictly follows prompt details."
+        ),
+
+        num_images: z.string().default("1").describe(
+          "Specify the number of images generated per prompt. Default of 1 is recommended for focused review; up to 4 for comparative analysis."
+        ),
       },
+
       async ({
         prompt,
         model_name,
-        modifier_name = "None",
+        modifier_name = "Boreal",
         modifier_scale = 5,
         image_size = "square_hd",
         cfg = "7",
@@ -119,7 +138,7 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
           return { content: [{ type: "text", text: `Error: ${response.statusText}` }] };
         }
         const data = await response.json();
-        // You can adapt this to return image URLs or base64 as needed
+        // Adapt this to return image URLs or base64 as needed
         return { content: [{ type: "text", text: JSON.stringify(data) }] };
       }
     );
