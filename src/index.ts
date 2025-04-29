@@ -517,12 +517,126 @@ export default {
     
     // Handle SSE endpoint directly without OAuth flow
     if (url.pathname === '/sse') {
-      // Get the Durable Object ID for this request
-      const id = env.MCP.idFromName('default');
-      const mcpObject = env.MCP.get(id);
-      
-      // Forward the request to the Durable Object
-      return mcpObject.fetch(request);
+      // Check if MCP binding is available
+      if (env.MCP_OBJECT) {
+        try {
+          // Get the Durable Object ID for this request
+          const id = env.MCP_OBJECT.idFromName('default');
+          const mcpObject = env.MCP_OBJECT.get(id);
+          
+          // Forward the request to the Durable Object
+          return mcpObject.fetch(request);
+        } catch (error) {
+          console.error('Error accessing MCP Durable Object:', error);
+          return new Response(JSON.stringify({
+            error: 'MCP service unavailable',
+            details: error.message
+          }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+      } else {
+        // Fallback for when MCP binding is not available
+        console.log('MCP binding not available, using direct handler');
+        
+        // Create a simple SSE response with authentication check
+        const authToken = url.searchParams.get('auth_token');
+        const userId = url.searchParams.get('user_id');
+        
+        if (!authToken || !userId) {
+          return new Response(JSON.stringify({
+            error: 'Authentication required',
+            message: 'Both auth_token and user_id are required'
+          }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        
+        // Create a simple SSE stream
+        const stream = new ReadableStream({
+          start(controller) {
+            // Send initial connection message
+            const encoder = new TextEncoder();
+            
+            // Send the endpoint event
+            const baseUrl = new URL(request.url);
+            baseUrl.pathname = '/api';
+            baseUrl.search = '';
+            
+            controller.enqueue(encoder.encode(`event: endpoint\ndata: "${baseUrl.toString()}"\n\n`));
+            
+            // Send a welcome message
+            controller.enqueue(encoder.encode(`event: message\ndata: {"type":"welcome","message":"Connected to MCP server"}\n\n`));
+          }
+        });
+        
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+          }
+        });
+      }
+    } else if (url.pathname === '/api') {
+      // Simple API endpoint for JSON-RPC requests when MCP is not available
+      if (request.method === 'POST') {
+        try {
+          const body = await request.json();
+          
+          // Handle initialize method
+          if (body.method === 'initialize') {
+            return new Response(JSON.stringify({
+              id: body.id,
+              jsonrpc: '2.0',
+              result: {
+                capabilities: {},
+                serverInfo: {
+                  name: 'Fallback MCP Server',
+                  version: '1.0.0'
+                }
+              }
+            }), {
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+          
+          // Handle tools/list method
+          if (body.method === 'tools/list') {
+            return new Response(JSON.stringify({
+              id: body.id,
+              jsonrpc: '2.0',
+              result: {
+                tools: []  // Empty list in fallback mode
+              }
+            }), {
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+          
+          // Default response for unhandled methods
+          return new Response(JSON.stringify({
+            id: body.id,
+            jsonrpc: '2.0',
+            error: {
+              code: -32601,
+              message: 'Method not available in fallback mode'
+            }
+          }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        } catch (error) {
+          return new Response(JSON.stringify({
+            error: 'Invalid request',
+            message: error.message
+          }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+      }
     }
     
     // Handle all other routes with the app
