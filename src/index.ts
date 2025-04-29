@@ -34,11 +34,13 @@ export class MyMCP extends McpAgent<Env, MyMCPState, XanoProps> {
       });
     }
     
-    // Set up debugging
-    // Use type assertion to bypass TypeScript error
-    (this.server as any).on("error", (error) => {
-      console.error("MCP Server Error:", error);
-    });
+    // Set up debugging if the underlying MCP server supports an `on` method
+    const srv: any = this.server as any;
+    if (typeof srv.on === "function") {
+      srv.on("error", (error: any) => {
+        console.error("MCP Server Error:", error);
+      });
+    }
   }
 
   async init() {
