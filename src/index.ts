@@ -136,6 +136,14 @@ export class MyMCP extends McpAgent<Env, MyMCPState, XanoProps> {
     }
   }
   
+  // Cloudflare Durable Object entrypoint
+  // Explicitly expose fetch so that the runtime finds it. We forward to our
+  // existing `connect()` method, which handles the logic.
+  // This prevents the runtime error: "Handler does not export a fetch() function."
+  fetch(request: Request) {
+    return this.connect(request);
+  }
+
   // Fetch tool definitions from Xano
   async fetchToolDefinitions() {
     try {
