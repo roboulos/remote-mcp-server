@@ -6,9 +6,6 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "remote-mcp-server",
 	"main": "src/index.ts",
-	"build": {
-		"external": ["@modelcontextprotocol/sdk"]
-	},
 	"compatibility_date": "2025-03-10",
 	"migrations": [
 		{
