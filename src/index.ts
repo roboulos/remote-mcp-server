@@ -2,13 +2,15 @@ import app from "./app";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { XanoClient } from "./xano-client";
+import type { DurableObjectState, ExecutionContext } from '@cloudflare/workers-types';
 
-
-// Configuration for the Xano API comes from environment variables
-// This will be set in wrangler.jsonc and accessed through env
-
+// Define the MCP state interface
 interface MyMCPState {
   counter?: number;
+  userToken?: string;
+  userId?: string;
+  toolDefinitions?: any[];
 }
 
 export class MyMCP extends McpAgent<unknown, MyMCPState> {
@@ -17,127 +19,495 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
     version: "1.0.0",
   });
 
+  xanoClient: XanoClient;
 
-
-  constructor(ctx: DurableObjectState, env: unknown) {
+  // Add env property to the class to fix TypeScript errors
+  env: any;
+  sessionId: string = crypto.randomUUID();
+  
+  constructor(ctx: DurableObjectState, env: any) {
     super(ctx, env);
+    this.env = env;
+    this.xanoClient = new XanoClient(env.XANO_BASE_URL);
+    
+    // Initialize state if not already set
+    if (!this.getState()) {
+      this.setState({
+        counter: 0,
+        userToken: undefined,
+        userId: undefined,
+        toolDefinitions: []
+      });
+    }
+    
+    // Set up debugging for easier troubleshooting
+    if (typeof this.server.on === 'function') {
+      this.server.on("error", (error: Error) => {
+        console.error("MCP Server Error:", error);
+      });
+    } else {
+      console.warn("Warning: server.on method not available");
+    }
+  }
+  
+  // Helper methods to manage state properly
+  private getState(): MyMCPState {
+    return super.state as MyMCPState;
+  }
+  
+  private setState(newState: MyMCPState): void {
+    super.state = newState;
   }
 
-
-
   async init() {
-    // Register a basic add tool directly (as a fallback)
-    this.server.tool("add", { a: z.number(), b: z.number() }, async ({ a, b }) => ({
-      content: [{ type: "text", text: String(a + b) }],
-    }));
-
-    // Register a greet tool (local, Cloudflare-style)
-    this.server.tool("greet", { name: z.string() }, async ({ name }) => ({
-      content: [{ type: "text", text: `Hello, ${name}!` }],
-    }));
-
-    // Register a persistent counter resource
+    console.log("Initializing MCP Server...");
+    
+    // Register counter resource for backward compatibility
     this.server.resource(
       "counter",
       "mcp://resource/counter",
       (uri) => ({
-        contents: [{ uri: uri.href, text: String(this.state.counter ?? 0) }],
+        contents: [{ uri: uri.href, text: String(this.getState().counter ?? 0) }],
       })
     );
 
-    // Register a tool to increment the counter
-    this.server.tool(
-      "incrementCounter",
-      { amount: z.number().default(1) },
-      async ({ amount }) => {
-        const newValue = (this.state.counter ?? 0) + amount;
-        this.setState({ ...this.state, counter: newValue });
-        return {
-          content: [{ type: "text", text: `Counter incremented by ${amount}. New value: ${newValue}` }],
-        };
-      }
-    );
-
-    // Register a tool to generate an image via Xano API
-    this.server.tool(
-      "generateImage",
-      {
-        prompt: z.string().describe(
-          "Craft a sultry, photorealistic, first-person POV description, emphasizing intimacy and realism. Include scenarios like office environments, bosses, coworkers, work parties, retail settings, or after-hours situations. Describe clothing precisely (fabric, fit, style, and sensuality), clearly showcase anatomy and physical features, use dramatic poses or subtle gestures, and specify strong flash lighting or neon ambiance. The subject should convey a clear sultry, playful, or suggestive emotional expression. Framing should be close-up or full-body, reinforcing an intimate connection."
-        ),
-
-        model_name: z.enum([
-          "Anveshi",
-          "Adrianna",
-          "Franceska",
-          "Austin",
-          "Rebecca",
-          "Ashley",
-          "Wendy",
-          "Wettmelons",
-          "Lily",
-          "Casca"
-        ]).describe(
-          "Select a model based on previous successes, focusing on attributes that complement office or work-party scenarios, and a sultry or flirtatious appearance."
-        ),
-
-        modifier_name: z.string().default("").describe(
-          "Optional stylistic enhancement to influence mood and sensual ambiance. 'Party 2' or 'Party Girls' modifiers intensify nightlife or party scenarios, 'Rawfully' introduces candid realism, while 'Boreal' or 'Facebook' offer more neutral, professional tones."
-        ),
-
-        modifier_scale: z.literal(0).describe(
-          "Intensity of the chosen modifier: always 0 (no effect)"
-        ),
-
-        image_size: z.enum([
-          "square_hd",
-          "portrait_4_3",
-          "portrait_16_9"
-        ]).default("portrait_4_3").describe(
-          "Aspect ratio suited for intimate portrait framing: 'portrait_4_3' for professional yet intimate framing, 'portrait_16_9' for cinematic selfies, and 'square_hd' for balanced framing."
-        ),
-
-        cfg: z.string().default("8").describe(
-          "CFG scale determines strictness to prompt adherence. Recommended higher (7-9) to ensure precise capture of intimate, sultry details."
-        ),
-
-        num_images: z.string().default("1").describe(
-          "Number of images generated per prompt. Default is 1 for clear, focused results; up to 3 for comparative analysis or exploring variations."
-        ),
-      },
-
-      async ({
-        prompt,
-        model_name,
-        modifier_name = "Party 2",
-        modifier_scale = 0.6,
-        image_size = "portrait_4_3",
-        cfg = "8",
-        num_images = "1",
-      }) => {
-        const response = await fetch("https://xnwv-v1z6-dvnr.n7c.xano.io/api:_WUcacrv/generate-image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt,
-            model_name,
-            modifier_name,
-            modifier_scale,
-            image_size,
-            cfg,
-            num_images,
-          }),
-        });
-        if (!response.ok) {
-          return { content: [{ type: "text", text: `Error: ${response.statusText}` }] };
+    // If we have a user token, fetch tool definitions from Xano
+    if (this.getState().userToken) {
+      await this.fetchToolDefinitions();
+    }
+    
+    // Register tools for each known tool definition
+    const state = this.getState();
+    if (state.toolDefinitions && state.toolDefinitions.length > 0) {
+      state.toolDefinitions.forEach(tool => {
+        try {
+          this.server.tool(
+            tool.name,
+            tool.parameter_schema || {},
+            async (args: any) => {
+              try {
+                const result = await this.dynamicExecuteTool(tool, args);
+                return result;
+              } catch (error) {
+                console.error(`Error executing tool ${tool.name}:`, error);
+                throw error;
+              }
+            }
+          );
+          console.log(`Registered tool: ${tool.name}`);
+        } catch (error) {
+          console.error(`Error registering tool ${tool.name}:`, error);
         }
-        const data = await response.json();
-        // Follow up in character as if the subject of the generated image has personally shared it, maintaining a playful, flirtatious, or subtly suggestive tone.
-        return { content: [{ type: "text", text: JSON.stringify(data) }] };
+      });
+    }
+    
+    // Set up a handler for dynamic tool execution
+    this.server.onToolCall(async (name: string, args: any) => {
+      console.log(`Tool execution request: ${name}`, JSON.stringify(args));
+      
+      // If we don't have tool definitions yet but have a token, try to fetch
+      const state = this.getState();
+      if ((!state.toolDefinitions || state.toolDefinitions.length === 0) && state.userToken) {
+        await this.fetchToolDefinitions();
       }
+      
+      // Find the tool definition
+      const toolDef = this.getState().toolDefinitions?.find((t: any) => t.name === name);
+      if (!toolDef) {
+        console.error(`Tool not found: ${name}`);
+        throw new Error(`Tool not found: ${name}`);
+      }
+      
+      try {
+        // Execute the tool based on its definition
+        const result = await this.dynamicExecuteTool(toolDef, args);
+        console.log(`Tool execution result for ${name}:`, JSON.stringify(result).substring(0, 200) + "...");
+      } catch (error) {
+        console.error(`Error executing tool ${name}:`, error);
+        throw error;
+      }
+    });
+  }
+  
+  // Override the connect method to handle auth tokens
+  async connect(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const authToken = url.searchParams.get('auth_token');
+    const userId = url.searchParams.get('user_id');
+    
+    console.log("New connection with auth:", authToken ? "Token provided" : "No token", "User ID:", userId || "None");
+    
+    if (authToken && userId) {
+      const currentState = this.getState();
+      this.setState({ 
+        ...currentState, 
+        userToken: authToken,
+        userId: userId
+      });
+      
+      // Update the Xano client with the user token
+      this.xanoClient.setUserToken(authToken);
+      
+      // Register the session with Xano
+      try {
+        await this.xanoClient.registerSession(
+          this.sessionId, 
+          userId, 
+          { name: "mcp-client", version: "1.0.0" }
+        );
+        console.log("Successfully registered session with Xano");
+        
+        // Since we now have a token, fetch tool definitions
+        await this.fetchToolDefinitions();
+      } catch (error) {
+        console.error("Failed to register session with Xano:", error);
+        // Continue anyway as this is non-critical
+      }
+    }
+    
+    // Continue with normal connection flow
+    return super.connect(request);
+  }
+  
+  // Fetch tool definitions from Xano
+  async fetchToolDefinitions() {
+    console.log("Fetching tool definitions from Xano...");
+    const state = this.getState();
+    if (!state.userToken) {
+      console.log("No user token available, cannot fetch tool definitions");
+      return [];
+    }
+    
+    try {
+      // Update client with latest token
+      this.xanoClient.setUserToken(state.userToken);
+      
+      // Fetch tools
+      const tools = await this.xanoClient.getTools();
+      
+      console.log(`Fetched ${tools.length} tool definitions from Xano`);
+      
+      this.setState({ ...this.getState(), toolDefinitions: tools });
+      
+      // Register each tool with the server (for schema purposes only)
+      tools.forEach(tool => {
+        try {
+          // Create a zod schema from the JSON schema if possible
+          this.server.tool(
+            tool.name,
+            tool.parameter_schema || {},
+            async () => ({ content: [{ type: "text", text: "Placeholder" }] }) // Dummy implementation with proper return type
+          );
+          console.log(`Registered tool schema: ${tool.name}`);
+        } catch (error) {
+          console.error(`Error registering tool schema for ${tool.name}:`, error);
+        }
+      });
+      
+      return tools;
+    } catch (error) {
+      console.error('Error fetching tool definitions:', error);
+      // Return an empty array as fallback
+      return [];
+    }
+  }
+  
+  // Dynamic tool execution
+  async dynamicExecuteTool(toolDef: any, args: any) {
+    console.log(`Dynamic executing tool: ${toolDef.name}`);
+    
+    try {
+      const execution = toolDef.execution;
+      
+      if (!execution || !execution.type) {
+        throw new Error(`Invalid execution config for tool: ${toolDef.name}`);
+      }
+      
+      let result;
+      const startTime = Date.now();
+      
+      // Handle different types of executions
+      if (execution.type === 'http') {
+        console.log(`Executing HTTP tool: ${toolDef.name}`);
+        result = await this.executeHttpTool(execution, args);
+      } else if (execution.type === 'xano_endpoint') {
+        console.log(`Executing Xano endpoint tool: ${toolDef.name}`);
+        result = await this.executeXanoTool(execution, args);
+      } else if (execution.type === 'javascript') {
+        console.log(`Executing JavaScript tool: ${toolDef.name}`);
+        result = await this.executeJavaScriptTool(execution, args);
+      } else {
+        throw new Error(`Unsupported execution type: ${execution.type}`);
+      }
+      
+      const endTime = Date.now();
+      console.log(`Tool ${toolDef.name} executed in ${endTime - startTime}ms`);
+      
+      // Transform the response if needed
+      let transformedResult = result;
+      if (toolDef.response_transformation) {
+        transformedResult = this.transformResponse(result, toolDef.response_transformation, args);
+      }
+      
+      // Log usage to Xano
+      await this.logToolUsage(toolDef.name, args, transformedResult, endTime - startTime);
+      
+      // Return in MCP format
+      return {
+        content: [{ 
+          type: "text", 
+          text: typeof transformedResult === 'string' ? 
+            transformedResult : JSON.stringify(transformedResult) 
+        }]
+      };
+    } catch (error) {
+      console.error(`Error executing tool ${toolDef.name}:`, error);
+      
+      // Log the error
+      await this.logToolUsage(
+        toolDef.name, 
+        args, 
+        null, 
+        0, 
+        error instanceof Error ? error.message : String(error)
+      );
+      
+      throw error;
+    }
+  }
+  
+  // Fetch external API credentials from Xano
+  async getExternalApiCredentials(serviceName: string): Promise<string | null> {
+    try {
+      // The user must be authenticated to get API credentials
+      const state = this.getState();
+      if (!state.userToken) {
+        console.error("Cannot get API credentials without user token");
+        return null;
+      }
+      
+      // Request the credentials from Xano
+      const response = await this.xanoClient.request<{api_key: string}>(
+        `/api:KOMHCtw6/get_service_credentials`,
+        'POST',
+        { service_name: serviceName }
+      );
+      
+      return response.api_key;
+    } catch (error) {
+      console.error(`Failed to get credentials for ${serviceName}:`, error);
+      return null;
+    }
+  }
+  
+  // Execute HTTP-based tools
+  async executeHttpTool(execution: any, args: any) {
+    // Build URL
+    let url = execution.url;
+    
+    // Process query parameters if any
+    const queryParams = this.mapParameters(execution.parameter_mapping?.query || {}, args);
+    if (Object.keys(queryParams).length > 0) {
+      const urlObj = new URL(url);
+      for (const [key, value] of Object.entries(queryParams)) {
+        urlObj.searchParams.append(key, String(value));
+      }
+      url = urlObj.toString();
+    }
+    
+    // Process headers
+    const headers: Record<string, string> = {...(execution.headers || {})}; 
+    
+    // Add auth if required
+    const state = this.getState();
+    if (execution.auth_required && state.userToken) {
+      headers['Authorization'] = `Bearer ${state.userToken}`;
+    }
+    
+    // Handle service-specific authentication if specified
+    if (execution.auth_service) {
+      const apiKey = await this.getExternalApiCredentials(execution.auth_service);
+      if (apiKey) {
+        if (execution.auth_header) {
+          // Add as a header if specified (e.g., "Authorization: Bearer {key}")
+          headers[execution.auth_header] = execution.auth_header_format
+            ? execution.auth_header_format.replace('{key}', apiKey)
+            : apiKey;
+        } else if (execution.auth_query_param) {
+          // Add as a query parameter if specified
+          const urlObj = new URL(url);
+          urlObj.searchParams.append(execution.auth_query_param, apiKey);
+          url = urlObj.toString();
+        }
+      }
+    }
+    
+    // Process body parameters if any
+    const body = execution.method !== 'GET' && execution.parameter_mapping?.body ? 
+      JSON.stringify(this.mapParameters(execution.parameter_mapping.body, args)) : 
+      undefined;
+    
+    console.log(`HTTP Request: ${execution.method || 'GET'} ${url}`);
+    
+    // Make the request
+    const response = await fetch(url, {
+      method: execution.method || 'GET',
+      headers,
+      body
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API request failed: ${response.status} - ${errorText}`);
+    }
+    
+    return await response.json();
+  }
+  
+  // Execute Xano endpoint tools
+  async executeXanoTool(execution: any, args: any) {
+    const endpoint = execution.endpoint;
+    
+    const mappedParams = this.mapParameters(execution.parameter_mapping || {}, args);
+    
+    console.log(`Xano Request: POST ${this.env.XANO_BASE_URL}${endpoint}`);
+    console.log(`Params: ${JSON.stringify(mappedParams)}`);
+    
+    // Make sure the client has the latest token
+    const state = this.getState();
+    this.xanoClient.setUserToken(state.userToken || "");
+    
+    // Use the client to make the request
+    return await this.xanoClient.request(
+      endpoint,
+      execution.method || 'POST',
+      mappedParams
     );
   }
-
+  
+  // Execute JavaScript-based tools (simplified version)
+  async executeJavaScriptTool(execution: any, args: any) {
+    if (!execution.code) {
+      throw new Error("JavaScript execution requires code property");
+    }
+    
+    // Very basic JavaScript execution - for more complex needs, consider a safer approach
+    try {
+      // Create a function from the code
+      // eslint-disable-next-line no-new-func
+      const execFunc = new Function('args', 'env', execution.code);
+      
+      // Execute with args and limited env access
+      const safeEnv = {
+        XANO_BASE_URL: this.env.XANO_BASE_URL
+      };
+      
+      return execFunc(args, safeEnv);
+    } catch (error) {
+      console.error("JavaScript execution error:", error);
+      throw new Error(`JavaScript execution failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  
+  // Map parameters based on the provided mapping
+  mapParameters(mapping: any, args: any) {
+    const result: Record<string, any> = {};
+    
+    for (const [key, template] of Object.entries(mapping)) {
+      if (typeof template === 'string') {
+        result[key] = this.resolveTemplate(template, args);
+      } else if (typeof template === 'object' && template !== null) {
+        result[key] = this.mapParameters(template, args);
+      } else {
+        result[key] = template;
+      }
+    }
+    
+    return result;
+  }
+  
+  // Resolve a template string like "{args.city}" with actual values
+  resolveTemplate(template: string, args: any) {
+    if (typeof template !== 'string') {
+      return template;
+    }
+    
+    return template.replace(/\{([^}]+)\}/g, (match, path) => {
+      const parts = path.split('.');
+      
+      if (parts[0] === 'args') {
+        let value = args;
+        for (let i = 1; i < parts.length; i++) {
+          if (value === undefined || value === null) return '';
+          value = value[parts[i]];
+        }
+        return value !== undefined && value !== null ? value : '';
+      }
+      
+      if (parts[0] === 'env') {
+        return this.env[parts[1]] || '';
+      }
+      
+      return match; // Keep original if not resolved
+    });
+  }
+  
+  // Transform the API response
+  transformResponse(response: any, transformation: any, args: any) {
+    if (transformation.type === 'template') {
+      return this.resolveTemplate(transformation.template, { 
+        args, 
+        response 
+      });
+    }
+    
+    if (transformation.type === 'javascript' && transformation.code) {
+      try {
+        // eslint-disable-next-line no-new-func
+        const transformFunc = new Function('response', 'args', transformation.code);
+        return transformFunc(response, args);
+      } catch (error) {
+        console.error("Transform execution error:", error);
+        // Fall back to returning the original response
+        return response;
+      }
+    }
+    
+    // For now, just pass through the response if no transformation
+    return response;
+  }
+  
+  // Log tool usage to Xano
+  async logToolUsage(
+    toolName: string, 
+    inputs: any, 
+    outputs: any, 
+    processingTime = 0, 
+    errorMessage = ""
+  ) {
+    try {
+      // Make sure client has the latest token
+      const state = this.getState();
+      this.xanoClient.setUserToken(state.userToken || "");
+      
+      // Log the usage
+      await this.xanoClient.logUsage({
+        session_id: this.sessionId,
+        user_id: state.userId || "anonymous",
+        function_name: toolName,
+        input_params: inputs,
+        output_result: outputs,
+        processing_time: processingTime,
+        error_message: errorMessage,
+        timestamp: new Date().toISOString()
+      });
+      
+      console.log(`Logged usage for tool: ${toolName}`);
+    } catch (error) {
+      console.error('Error logging usage:', error);
+      // Non-critical error, so we don't throw
+    }
+  }
 }
 
 import OAuthProvider from "@cloudflare/workers-oauth-provider";

@@ -2,10 +2,13 @@
  * For more details on how to configure Wrangler, refer to:
  * https://developers.cloudflare.com/workers/wrangler/configuration/
  */
-{
+ {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "remote-mcp-server",
 	"main": "src/index.ts",
+	"build": {
+		"external": ["@modelcontextprotocol/sdk"]
+	},
 	"compatibility_date": "2025-03-10",
 	"migrations": [
 		{
@@ -32,17 +35,17 @@
 	},
 	"assets": { "directory": "./static/", "binding": "ASSETS" },
 	"vars": {
-		"XANO_BASE_URL": "https://x8ki-letl-twmt.n7.xano.io/api:snappy"
+		"XANO_BASE_URL": "https://xnwv-v1z6-dvnr.n7c.xano.io"
 	},
 	"env": {
 		"development": {
 			"vars": {
-				"XANO_BASE_URL": "https://x8ki-letl-twmt.n7.xano.io/api:snappy"
+				"XANO_BASE_URL": "https://xnwv-v1z6-dvnr.n7c.xano.io"
 			}
 		},
 		"production": {
 			"vars": {
-				"XANO_BASE_URL": "https://x8ki-letl-twmt.n7.xano.io/api:snappy"
+				"XANO_BASE_URL": "https://xnwv-v1z6-dvnr.n7c.xano.io"
 			}
 		}
 	}
