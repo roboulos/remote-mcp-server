@@ -209,12 +209,36 @@ export class MyMCP extends McpAgent<Env, MyMCPState, XanoProps> {
   }
 }
 
-// Export the OAuth provider with the correct handler configuration
-// Use the static mount method from MyMCP class similar to Cloudflare example
+// Create a default handler that routes /sse to the Durable Object and anything
+// else to the existing `app` handler (if present)
+const defaultHandler = {
+  async fetch(request: Request, env: Env, ctx: any) {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("/sse")) {
+      // Forward to the Durable Object (bypasses OAuth checks)
+      return MyMCP.mount("/sse").fetch(request, env, ctx);
+    }
+    // Fallback to whatever the original app handler does
+    return (app as any).fetch(request, env, ctx);
+  }
+};
+
+// Dummy API handler – never used because `apiRoute` is empty. We need this
+// solely to satisfy the type requirements of `OAuthProviderOptions`.
+const dummyApiHandler = {
+  fetch(_request: Request) {
+    return new Response("No API routes configured", { status: 501 });
+  }
+};
+
+// Export the OAuth provider. We do NOT configure `apiRoute` so the provider
+// will *not* attempt to treat /sse as a protected API route. Instead, every
+// request except the provider's own OAuth endpoints (/authorize, /token, /register)
+// will be passed straight through to our `defaultHandler`.
 export default new OAuthProvider({
-  apiRoute: "/sse",
-  apiHandler: MyMCP.mount("/sse") as any, // Use 'any' for maximum flexibility
-  defaultHandler: app as any,  // Use 'any' for maximum flexibility
+  apiRoute: [], // empty – we don't want the provider to intercept any API paths
+  apiHandler: dummyApiHandler as any,
+  defaultHandler: defaultHandler as any,
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
