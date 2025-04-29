@@ -20,7 +20,7 @@
 	"kv_namespaces": [
 	  {
 		"binding": "OAUTH_KV",
-		"id": "c43c2dc2174244c8bb1d4e5bb9cf6fa4"
+		"id": "remote-mcp-server-kv_namespace"
 	  }
 	],
 	"observability": {
