@@ -510,16 +510,22 @@ export class MyMCP extends McpAgent<unknown, MyMCPState> {
   }
 }
 
-import OAuthProvider from "@cloudflare/workers-oauth-provider";
-
-// Export the OAuth handler as the default (Cloudflare best practice)
-export default new OAuthProvider({
-  apiRoute: "/sse",
-  // @ts-ignore
-  apiHandler: MyMCP.mount("/sse"),
-  // @ts-ignore
-  defaultHandler: app,
-  authorizeEndpoint: "/authorize",
-  tokenEndpoint: "/token",
-  clientRegistrationEndpoint: "/register",
-});
+// Export a standard Cloudflare Worker handler
+export default {
+  async fetch(request: Request, env: any, ctx: ExecutionContext) {
+    const url = new URL(request.url);
+    
+    // Handle SSE endpoint directly without OAuth flow
+    if (url.pathname === '/sse') {
+      // Get the Durable Object ID for this request
+      const id = env.MCP.idFromName('default');
+      const mcpObject = env.MCP.get(id);
+      
+      // Forward the request to the Durable Object
+      return mcpObject.fetch(request);
+    }
+    
+    // Handle all other routes with the app
+    return app.fetch(request, env, ctx);
+  }
+};
