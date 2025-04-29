@@ -182,10 +182,12 @@ export class MyMCP extends McpAgent<Env, MyMCPState, XanoProps> {
 
   // Static mount method for use with OAuthProvider
   static mount(path: string) {
-    return (request: Request, env: Env, ctx: any) => {
-      const id = env.MCP_OBJECT.idFromName("main");
-      const mcpObject = env.MCP_OBJECT.get(id);
-      return mcpObject.fetch(request);
+    return {
+      fetch(request: Request, env: Env, ctx: any) {
+        const id = env.MCP_OBJECT.idFromName("main");
+        const mcpObject = env.MCP_OBJECT.get(id);
+        return mcpObject.fetch(request);
+      }
     };
   }
 }
