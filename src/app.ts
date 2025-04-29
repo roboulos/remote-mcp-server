@@ -1,21 +1,49 @@
 import { Hono } from "hono";
-import { layout, homeContent } from "./utils";
+import { layout } from "./utils";
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import type { Env } from "./types";
 
-export interface Env {
-  OAUTH_PROVIDER: OAuthHelpers;
-}
-
+// Define app with the imported Env type
 const app = new Hono<{ Bindings: Env }>();
 
 // Homepage - keep this for documentation
-app.get("/", async (c: any) => {
-  const content = await homeContent(c.req.raw);
-  return c.html(layout(content, "Snappy MCP - Home"));
+app.get("/", async (c) => {
+  return c.html(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Xano MCP Server</title>
+        <style>
+          body { font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
+          pre { background: #f4f4f4; padding: 10px; border-radius: 4px; overflow-x: auto; }
+          code { background: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+        </style>
+      </head>
+      <body>
+        <h1>Xano MCP Server</h1>
+        
+        <h2>Connection Options</h2>
+        
+        <h3>1. Direct Token Authentication (For Web App)</h3>
+        <p>Connect directly with your existing Xano token:</p>
+        <pre><code>/sse?auth_token=YOUR_XANO_TOKEN&user_id=YOUR_USER_ID</code></pre>
+        
+        <h3>2. OAuth Flow (For External Clients)</h3>
+        <p>Connect without a token to trigger the authentication flow:</p>
+        <pre><code>/sse</code></pre>
+        
+        <h2>Using with Claude Desktop, Cursor, etc.</h2>
+        <p>Use the <code>mcp-remote</code> proxy:</p>
+        <pre><code>npx mcp-remote ${new URL("/sse", c.req.url).href}</code></pre>
+        <p>Or with a direct token:</p>
+        <pre><code>npx mcp-remote ${new URL("/sse", c.req.url).href}?auth_token=YOUR_XANO_TOKEN&user_id=YOUR_USER_ID</code></pre>
+      </body>
+    </html>
+  `);
 });
 
 // Simple health check endpoint
-app.get("/health", (c: any) => {
+app.get("/health", (c) => {
   return c.json({
     status: "ok",
     message: "MCP server is running",
@@ -24,104 +52,84 @@ app.get("/health", (c: any) => {
   });
 });
 
-// Simplified token info endpoint (helpful for debugging)
-app.get("/token-info", (c: any) => {
-  const url = new URL(c.req.url);
-  const token = url.searchParams.get('token');
-  
-  if (!token) {
-    return c.json({ error: "No token provided" }, 400);
+// Simple authorize endpoint that redirects to Xano login
+app.get("/authorize", async (c) => {
+  const oauthReqInfo = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
+  if (!oauthReqInfo.clientId) {
+    return c.text("Invalid request", 400);
   }
+
+  // Store the state for callback
+  const state = btoa(JSON.stringify(oauthReqInfo));
   
-  // Return basic token info (without revealing the full token)
-  return c.json({
-    token_provided: true,
-    token_length: token.length,
-    token_prefix: token.substring(0, 5) + "...",
-    message: "Use this token with the SSE endpoint by appending ?auth_token=YOUR_TOKEN"
-  });
+  // Redirect to Xano login
+  const redirectUri = `${c.env.XANO_BASE_URL}/auth/login?callback=${
+    encodeURIComponent(new URL("/callback", c.req.url).href)
+  }&state=${encodeURIComponent(state)}`;
+  
+  return Response.redirect(redirectUri);
 });
 
-// Connection guide endpoint
-app.get("/connect-guide", (c: any) => {
-  return c.html(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Snappy MCP Connection Guide</title>
-        <style>
-          body { font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
-          pre { background: #f4f4f4; padding: 10px; border-radius: 4px; overflow-x: auto; }
-          code { background: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
-        </style>
-      </head>
-      <body>
-        <h1>Snappy MCP Connection Guide</h1>
-        
-        <h2>1. Get Authentication Token</h2>
-        <p>First, authenticate with Xano to get your user token:</p>
-        <pre><code>
-POST https://xnwv-v1z6-dvnr.n7c.xano.io/api:e6emygx3/auth/login
-{
-  "email": "your-email@example.com",
-  "password": "your-password"
-}
-        </code></pre>
-        
-        <h2>2. Connect to MCP Server</h2>
-        <p>Use the token to connect to the MCP server:</p>
-        <pre><code>
-// Connect to the SSE endpoint with your token
-const eventSource = new EventSource(
-  "${c.req.url.split('/connect-guide')[0]}/sse?auth_token=YOUR_TOKEN&user_id=YOUR_USER_ID"
-);
-
-// Set up event listeners
-eventSource.addEventListener('endpoint', (event) => {
-  const messageEndpoint = JSON.parse(event.data);
-  console.log('Message endpoint:', messageEndpoint);
-});
-
-// Handle messages
-eventSource.addEventListener('message', (event) => {
-  const message = JSON.parse(event.data);
-  console.log('Message received:', message);
-});
-        </code></pre>
-        
-        <h2>3. Initialize MCP Communication</h2>
-        <p>After connecting, initialize the MCP protocol:</p>
-        <pre><code>
-// Initialize
-fetch(messageEndpoint, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    id: 0,
-    jsonrpc: "2.0",
-    method: "initialize",
-    params: {
-      protocolVersion: "2024-11-05",
-      capabilities: { sampling: {} },
-      clientInfo: { name: "mcp-client", version: "1.0.0" }
+// Callback handler for OAuth flow
+app.get("/callback", async (c) => {
+  try {
+    // Get state and token from query parameters
+    const state = c.req.query("state");
+    const token = c.req.query("token");
+    const userId = c.req.query("user_id");
+    
+    if (!state || !token || !userId) {
+      return c.text("Missing required parameters", 400);
     }
-  })
+    
+    // Parse the state
+    const oauthReqInfo = JSON.parse(atob(state));
+    if (!oauthReqInfo.clientId) {
+      return c.text("Invalid state", 400);
+    }
+    
+    // Complete the OAuth flow
+    const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
+      request: oauthReqInfo,
+      userId: userId,
+      metadata: {},
+      scope: [], // Replace with actual scopes/permissions if needed
+      props: {
+        accessToken: token,
+        user: { id: userId }
+      },
+    });
+    
+    return Response.redirect(redirectTo);
+  } catch (error) {
+    console.error("Callback error:", error);
+    return c.text("Authentication error", 500);
+  }
 });
 
-// Request tool list
-fetch(messageEndpoint, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    id: 1,
-    jsonrpc: "2.0",
-    method: "tools/list"
-  })
+// Simple token endpoint required by OAuth spec
+app.post("/token", async (c) => {
+  try {
+    // Generate a token based on the code provided
+    const tokenResponse = await c.env.OAUTH_PROVIDER.handleTokenRequest(c.req.raw);
+    return new Response(tokenResponse.body, {
+      status: tokenResponse.status,
+      headers: tokenResponse.headers,
+    });
+  } catch (error) {
+    console.error("Token error:", error);
+    return c.json({ error: "invalid_request" }, 400);
+  }
 });
-        </code></pre>
-      </body>
-    </html>
-  `);
+
+// Simple registration endpoint required by OAuth spec
+app.post("/register", async (c) => {
+  // This is a minimal implementation
+  const registrationResponse = await c.env.OAUTH_PROVIDER.handleRegistrationRequest(c.req.raw);
+  return new Response(registrationResponse.body, {
+    status: registrationResponse.status,
+    headers: registrationResponse.headers,
+  });
 });
 
 export default app;
