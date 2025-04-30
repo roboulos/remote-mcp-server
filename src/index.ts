@@ -124,9 +124,21 @@ export class MyMCP extends McpAgent<Env, MyMCPState, XanoProps> {
     
     // Process the request directly
     try {
-      // Let the server process the request
-      // We're using any to bypass TypeScript errors with the SDK
-      return (this.server as any).fetch(request);
+      // Handle OPTIONS requests for CORS
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Max-Age": "86400",
+          },
+        });
+      }
+      
+      // Let the MCP SDK handle the request with its internal protocol handling
+      // Using type assertion since the TypeScript definitions may be outdated
+      return (this.server as any).handle(request);
     } catch (error) {
       console.error('Error processing MCP request:', error);
       return new Response(JSON.stringify({ error: 'Internal server error' }), {
