@@ -2,6 +2,8 @@ import app from "./app";
 // Use relative paths for the MCP SDK to avoid module resolution issues
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { Readable } from "stream";
 import { XanoClient } from "./xano-client";
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import type { XanoProps } from "./props";
@@ -122,7 +124,6 @@ export class MyMCP extends McpAgent<Env, MyMCPState, XanoProps> {
       }
     }
     
-    // Process the request directly
     try {
       // Handle OPTIONS requests for CORS
       if (request.method === "OPTIONS") {
@@ -136,8 +137,199 @@ export class MyMCP extends McpAgent<Env, MyMCPState, XanoProps> {
         });
       }
       
-      // Based on the SDK docs, process() is the correct method to use
-      return (this.server as any).process(request);
+      // Create a Promise to capture the response data
+      let responseResolve: (value: Response) => void;
+      let responseReject: (reason?: any) => void;
+      const responsePromise = new Promise<Response>((resolve, reject) => {
+        responseResolve = resolve;
+        responseReject = reject;
+      });
+      
+      // Parse request body
+      const body = request.method === 'POST' ? await request.clone().json().catch(() => null) : null;
+      
+      // Create Express-like request object that the transport expects
+      const expressReq = {
+        method: request.method,
+        url: request.url,
+        headers: Object.fromEntries(request.headers.entries()),
+        body: body
+      };
+      
+      // Create Express-like response object
+      const expressRes = {
+        // Response state
+        statusCode: 200,
+        headers: {} as Record<string, string>,
+        body: '',
+        headersSent: false,
+        finished: false,
+        
+        // Methods expected by the MCP transport
+        writeHead: (status: number, headers?: Record<string, string>) => {
+          expressRes.statusCode = status;
+          if (headers) {
+            expressRes.headers = { ...expressRes.headers, ...headers };
+          }
+          expressRes.headersSent = true;
+          return expressRes;
+        },
+        
+        setHeader: (name: string, value: string) => {
+          expressRes.headers[name] = value;
+          return expressRes;
+        },
+        
+        getHeader: (name: string) => {
+          return expressRes.headers[name];
+        },
+        
+        removeHeader: (name: string) => {
+          delete expressRes.headers[name];
+          return expressRes;
+        },
+        
+        set: (field: string | Record<string, string>, value?: string) => {
+          if (typeof field === 'string' && value !== undefined) {
+            expressRes.headers[field] = value;
+          } else if (typeof field === 'object') {
+            expressRes.headers = { ...expressRes.headers, ...field };
+          }
+          return expressRes;
+        },
+        
+        status: (code: number) => {
+          expressRes.statusCode = code;
+          return {
+            send: (body: any) => {
+              expressRes.body = typeof body === 'string' ? body : JSON.stringify(body);
+              expressRes.finished = true;
+              
+              // Resolve the response promise
+              const responseHeaders = new Headers();
+              for (const [key, value] of Object.entries(expressRes.headers)) {
+                responseHeaders.set(key, value);
+              }
+              responseResolve(new Response(expressRes.body, {
+                status: expressRes.statusCode,
+                headers: responseHeaders
+              }));
+              
+              return expressRes;
+            },
+            json: (body: any) => {
+              expressRes.headers['Content-Type'] = 'application/json';
+              expressRes.body = JSON.stringify(body);
+              expressRes.finished = true;
+              
+              // Resolve the response promise
+              const responseHeaders = new Headers();
+              for (const [key, value] of Object.entries(expressRes.headers)) {
+                responseHeaders.set(key, value);
+              }
+              responseResolve(new Response(expressRes.body, {
+                status: expressRes.statusCode,
+                headers: responseHeaders
+              }));
+              
+              return expressRes;
+            }
+          };
+        },
+        
+        json: (body: any) => {
+          expressRes.headers['Content-Type'] = 'application/json';
+          expressRes.body = JSON.stringify(body);
+          expressRes.finished = true;
+          
+          // Resolve the response promise
+          const responseHeaders = new Headers();
+          for (const [key, value] of Object.entries(expressRes.headers)) {
+            responseHeaders.set(key, value);
+          }
+          responseResolve(new Response(expressRes.body, {
+            status: expressRes.statusCode,
+            headers: responseHeaders
+          }));
+          
+          return expressRes;
+        },
+        
+        send: (body: any) => {
+          expressRes.body = typeof body === 'string' ? body : JSON.stringify(body);
+          expressRes.finished = true;
+          
+          // Resolve the response promise
+          const responseHeaders = new Headers();
+          for (const [key, value] of Object.entries(expressRes.headers)) {
+            responseHeaders.set(key, value);
+          }
+          responseResolve(new Response(expressRes.body, {
+            status: expressRes.statusCode,
+            headers: responseHeaders
+          }));
+          
+          return expressRes;
+        },
+        
+        end: (chunk?: any) => {
+          if (chunk) {
+            expressRes.body = typeof chunk === 'string' ? chunk : JSON.stringify(chunk);
+          }
+          expressRes.finished = true;
+          
+          // Resolve the response promise
+          const responseHeaders = new Headers();
+          for (const [key, value] of Object.entries(expressRes.headers)) {
+            responseHeaders.set(key, value);
+          }
+          responseResolve(new Response(expressRes.body, {
+            status: expressRes.statusCode,
+            headers: responseHeaders
+          }));
+          
+          return expressRes;
+        },
+        
+        // Event handling for compatibility with SSE
+        on: (event: string, handler: (...args: any[]) => void) => {
+          // We'll add minimal event handling for close events
+          if (event === 'close') {
+            // Nothing to do in this adapter
+          }
+          return expressRes;
+        },
+        
+        // Add methods for SSE
+        flushHeaders: () => {
+          expressRes.headersSent = true;
+          return expressRes;
+        },
+        
+        write: (chunk: string) => {
+          expressRes.body += chunk;
+          return true;
+        }
+      };
+      
+      // Create a transport for this request
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => this.sessionId,
+        onsessioninitialized: (sessionId) => {
+          console.log(`Session initialized: ${sessionId}`);
+        }
+      });
+      
+      // Connect our MCP server to this transport
+      await this.server.connect(transport);
+      
+      // Process the request through the transport
+      // This will call the appropriate handlers based on the request
+      // Use type assertions to bypass type checking since we're providing a compatible interface
+      await (transport as any).handleRequest(expressReq as any, expressRes as any, body);
+      
+      // Return the response captured by our promise
+      return responsePromise;
     } catch (error) {
       console.error('Error processing MCP request:', error);
       return new Response(JSON.stringify({ error: 'Internal server error' }), {
