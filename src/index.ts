@@ -136,9 +136,8 @@ export class MyMCP extends McpAgent<Env, MyMCPState, XanoProps> {
         });
       }
       
-      // Let the MCP SDK handle the request with its internal protocol handling
-      // Using type assertion since the TypeScript definitions may be outdated
-      return (this.server as any).handle(request);
+      // Based on the SDK docs, process() is the correct method to use
+      return (this.server as any).process(request);
     } catch (error) {
       console.error('Error processing MCP request:', error);
       return new Response(JSON.stringify({ error: 'Internal server error' }), {
