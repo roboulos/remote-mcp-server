@@ -161,32 +161,50 @@ export class MyMCP extends McpAgent<MyMcpState> {
   async onSSE(path: string): Promise<Response> {
     console.log(`Setting up SSE connection on path: ${path}`);
     
-    // Prepare headers for SSE response with proper protocol identifiers
-    const headers = new Headers({
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'MCP-Available-Transports': 'streamable-http',
-      'MCP-Transport': 'streamable-http'
+    // Create a new ReadableStream for our SSE response
+    const stream = new ReadableStream({
+      start(controller) {
+        // Send initial events that the Workers AI Playground expects
+        // Send server info
+        controller.enqueue('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0"}\n\n');
+        
+        // Send the tools list
+        const toolsListJson = JSON.stringify({
+          jsonrpc: "2.0",
+          result: {
+            tools: this.state?.tools || []
+          },
+          id: 1
+        });
+        controller.enqueue(`event: tools_list\ndata: ${toolsListJson}\n\n`);
+        
+        // Send a ready event
+        controller.enqueue('event: ready\ndata: {}\n\n');
+        
+        // Keep the connection open
+        const interval = setInterval(() => {
+          // Send ping to keep connection alive
+          controller.enqueue('event: ping\ndata: {}\n\n');
+        }, 30000);
+        
+        // Clean up on close
+        const cleanup = () => {
+          clearInterval(interval);
+        };
+        return cleanup;
+      }.bind(this),
     });
     
-    // Authentication was already handled in processRequest
-    // Forward to parent class implementation but ensure we're setting the proper headers
-    // by creating a custom transformer that adds our headers
-    const sseResponse = await super.onSSE(path);
-    
-    // Create a new response with our enhanced headers
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
-    
-    // Pipe the original response body to our writer
-    sseResponse.body?.pipeTo(writable).catch(error => {
-      console.error(`Error in SSE stream: ${error.message}`);
-    });
-    
-    return new Response(readable, {
-      status: 200,
-      headers
+    // Return the SSE response with proper headers
+    return new Response(stream, {
+      status: 200, 
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'MCP-Available-Transports': 'streamable-http',
+        'MCP-Transport': 'streamable-http'
+      }
     });
   }
   
