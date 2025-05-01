@@ -162,6 +162,7 @@ export class MyMCP extends McpAgent<MyMcpState> {
     console.log(`Setting up SSE connection on path: ${path}`);
     
     // Create a new ReadableStream for our SSE response
+    const self = this;
     const stream = new ReadableStream({
       start(controller) {
         // Send initial events that the Workers AI Playground expects
@@ -172,7 +173,7 @@ export class MyMCP extends McpAgent<MyMcpState> {
         const toolsListJson = JSON.stringify({
           jsonrpc: "2.0",
           result: {
-            tools: this.state?.tools || []
+            tools: (self.state as MyMcpState)?.tools || []
           },
           id: 1
         });
@@ -192,7 +193,7 @@ export class MyMCP extends McpAgent<MyMcpState> {
           clearInterval(interval);
         };
         return cleanup;
-      }.bind(this),
+      }
     });
     
     // Return the SSE response with proper headers
