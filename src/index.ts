@@ -1,458 +1,588 @@
 import app from "./app";
-// Use relative paths for the MCP SDK to avoid module resolution issues
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { Readable } from "stream";
 import { XanoClient } from "./xano-client";
-import OAuthProvider from "@cloudflare/workers-oauth-provider";
-import type { XanoProps } from "./props";
 import type { Env } from "./types";
+import { z } from "zod";
 
-// State interface (persisted in Durable Object)
-interface MyMCPState {
-  counter?: number;
-  toolDefinitions?: any[];
-}
+// Base URL for Xano API
+const XANO_BASE_URL = "https://xnwv-v1z6-dvnr.n7c.xano.io";
 
-export class MyMCP extends McpAgent<Env, MyMCPState, XanoProps> {
-  server = new McpServer({
-    name: "Xano MCP",
-    version: "1.0.0",
-  });
-  
+// Define the state type for our MCP server
+type MyMcpState = {
+  tools: any[];
+  sessionInfo: Record<string, any>;
+  authenticated: boolean;
+  lastActivityTime: number;
+};
+
+// Simple MCP implementation focused on Streamable HTTP transport
+export class MyMCP extends McpAgent<MyMcpState> {
+  server: McpServer;
   xanoClient: XanoClient;
   sessionId: string = 'default';
+  toolsRegistered: boolean = false;
+
+  // Initialize state
+  initialState: MyMcpState = {
+    tools: [],
+    sessionInfo: {},
+    authenticated: false,
+    lastActivityTime: Date.now()
+  };
 
   constructor(ctx: DurableObjectState, env: any) {
     super(ctx, env);
-    this.xanoClient = new XanoClient(env.XANO_BASE_URL);
-    
-    // Initialize state if not already set
-    if (!this.state) {
-      this.setState({
-        counter: 0,
-        toolDefinitions: []
-      });
-    }
-    
-    // Set up debugging if the underlying MCP server supports an `on` method
-    const srv: any = this.server as any;
-    if (typeof srv.on === "function") {
-      srv.on("error", (error: any) => {
-        console.error("MCP Server Error:", error);
-      });
-    }
-  }
-
-  async init() {
-    console.log("Initializing MCP Server...");
-    
-    // If token was provided in props or query params, fetch tools
-    if (this.props?.accessToken) {
-      console.log("User authenticated via token");
-      this.xanoClient.setUserToken(this.props.accessToken);
-      await this.fetchToolDefinitions();
-    }
-    
-    // Register the dynamic tool handler
-    // Use type assertion to bypass TypeScript error
-    (this.server as any).setToolHandler(async (name, args, context) => {
-      console.log(`Tool execution request: ${name}`, JSON.stringify(args));
-      
-      // Check authentication
-      if (!this.props?.accessToken) {
-        console.error("Authentication required");
-        throw new Error("Authentication required to execute tools");
-      }
-      
-      // If we don't have tool definitions yet, fetch them
-      if ((!this.state.toolDefinitions || this.state.toolDefinitions.length === 0)) {
-        await this.fetchToolDefinitions();
-      }
-      
-      // Find the tool definition
-      const toolDef = this.state.toolDefinitions?.find(t => t.name === name);
-      if (!toolDef) {
-        console.error(`Tool not found: ${name}`);
-        throw new Error(`Tool not found: ${name}`);
-      }
-      
-      try {
-        // Execute the tool based on its definition
-        const result = await this.dynamicExecuteTool(toolDef, args);
-        console.log(`Tool execution result for ${name}:`, JSON.stringify(result).substring(0, 200) + "...");
-        return result;
-      } catch (error) {
-        console.error(`Error executing tool ${name}:`, error);
-        throw error;
+    this.xanoClient = new XanoClient(env.XANO_BASE_URL || XANO_BASE_URL);
+    this.server = new McpServer({
+      name: "Xano MCP",
+      version: "1.0.0"
+    }, {
+      capabilities: {
+        toolExecution: true
       }
     });
   }
   
-  // Handle incoming connections
-  async connect(request: Request): Promise<Response> {
-    console.log("Connecting to MCP Server...");
+  // Called when state is updated
+  onStateUpdate(state: MyMcpState) {
+    console.log(`State updated: authenticated=${state.authenticated}, tool count=${state.tools.length}`);
     
-    // Check for direct token authentication
-    const url = new URL(request.url);
-    const authToken = url.searchParams.get('auth_token');
-    const userId = url.searchParams.get('user_id');
-    
-    if (authToken && userId) {
-      console.log("Direct token auth detected");
-      
-      // Save authentication info to props
-      this.props = {
-        ...this.props,
-        accessToken: authToken,
-        user: { id: userId }
-      };
-      
-      // Update Xano client
-      this.xanoClient.setUserToken(authToken);
-      
-      try {
-        await this.xanoClient.registerSession(
-          this.sessionId, 
-          userId, 
-          { name: "mcp-client", version: "1.0.0" }
-        );
-        console.log("Successfully registered session with Xano");
-      } catch (error) {
-        console.error("Failed to register session with Xano:", error);
-      }
+    // You can perform side effects when state changes
+    if (state.lastActivityTime + 30 * 60 * 1000 < Date.now()) {
+      console.log('Session inactive for 30 minutes, will be reset on next activity');
     }
+  }
+
+  async init() {
+    console.log("Initializing MyMCP server with Streamable HTTP transport...");
+    try {
+      await this.registerTools();
+    } catch (error) {
+      console.error("Failed to initialize MCP server:", error);
+    }
+  }
+  
+  // Register tools from Xano with the MCP server
+  async registerTools() {
+    try {
+      // Get user context from props if available
+      const userId = this.props?.user ? (this.props.user as {id?: string}).id : undefined;
+      const sessionId = this.sessionId;
+      
+      const toolDefinitions = await this.xanoClient.getTools(userId, sessionId);
+      console.log(`Loaded ${toolDefinitions.length} tools from Xano`);
+      
+      // Register each tool with the McpServer
+      for (const tool of toolDefinitions) {
+        // Convert tool parameters to Zod schema
+        const paramSchemas: Record<string, any> = {};
+        
+        if (tool.parameters) {
+          for (const param of tool.parameters) {
+            // Map Xano parameter types to Zod schema types
+            switch(param.type) {
+              case 'string':
+                paramSchemas[param.name] = param.required ? z.string() : z.string().optional();
+                break;
+              case 'number':
+              case 'integer':
+                paramSchemas[param.name] = param.required ? z.number() : z.number().optional();
+                break;
+              case 'boolean':
+                paramSchemas[param.name] = param.required ? z.boolean() : z.boolean().optional();
+                break;
+              case 'object':
+                paramSchemas[param.name] = param.required ? z.record(z.any()) : z.record(z.any()).optional();
+                break;
+              case 'array':
+                paramSchemas[param.name] = param.required ? z.array(z.any()) : z.array(z.any()).optional();
+                break;
+              default:
+                paramSchemas[param.name] = param.required ? z.any() : z.any().optional();
+            }
+          }
+        }
+        
+        // Register the tool using the SDK's tool method
+        console.log(`Registering tool: ${tool.name}`);
+        this.server.tool(
+          tool.name,
+          tool.description || '',
+          paramSchemas,
+          async (args) => {
+            return await this.executeTool(tool.name, args);
+          }
+        );
+      }
+      
+      this.toolsRegistered = true;
+      console.log(`Successfully registered ${toolDefinitions.length} tools with MCP server`);
+      return toolDefinitions.length;
+    } catch (error) {
+      console.error("Failed to register tools:", error);
+      throw error;
+    }
+  }
+  
+  async executeTool(toolName: string, args: any): Promise<any> {
+    console.log(`Executing tool ${toolName} with args:`, args);
     
     try {
-      // Handle OPTIONS requests for CORS
-      if (request.method === "OPTIONS") {
-        return new Response(null, {
-          headers: {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-            "Access-Control-Max-Age": "86400",
-          },
-        });
+      // Authenticate if needed
+      if (this.props?.accessToken) {
+        this.xanoClient.setUserToken(this.props.accessToken);
       }
       
-      // Create a Promise to capture the response data
-      let responseResolve: (value: Response) => void;
-      let responseReject: (reason?: any) => void;
-      const responsePromise = new Promise<Response>((resolve, reject) => {
-        responseResolve = resolve;
-        responseReject = reject;
-      });
+      // Get user context from props if available
+      const userId = this.props?.user ? (this.props.user as {id?: string}).id : undefined;
+      const sessionId = this.sessionId;
       
-      // Parse request body
-      const body = request.method === 'POST' ? await request.clone().json().catch(() => null) : null;
+      // Find the tool and execute it
+      const tools = await this.xanoClient.getTools(userId, sessionId);
+      const tool = tools.find(t => t.name === toolName);
       
-      // Create Express-like request object that the transport expects
-      const expressReq = {
-        method: request.method,
-        url: request.url,
-        headers: Object.fromEntries(request.headers.entries()),
-        body: body
-      };
+      if (!tool) {
+        throw new Error(`Tool not found: ${toolName}`);
+      }
       
-      // Create Express-like response object
-      const expressRes = {
-        // Response state
-        statusCode: 200,
-        headers: {} as Record<string, string>,
-        body: '',
-        headersSent: false,
-        finished: false,
-        
-        // Methods expected by the MCP transport
-        writeHead: (status: number, headers?: Record<string, string>) => {
-          expressRes.statusCode = status;
-          if (headers) {
-            expressRes.headers = { ...expressRes.headers, ...headers };
-          }
-          expressRes.headersSent = true;
-          return expressRes;
-        },
-        
-        setHeader: (name: string, value: string) => {
-          expressRes.headers[name] = value;
-          return expressRes;
-        },
-        
-        getHeader: (name: string) => {
-          return expressRes.headers[name];
-        },
-        
-        removeHeader: (name: string) => {
-          delete expressRes.headers[name];
-          return expressRes;
-        },
-        
-        set: (field: string | Record<string, string>, value?: string) => {
-          if (typeof field === 'string' && value !== undefined) {
-            expressRes.headers[field] = value;
-          } else if (typeof field === 'object') {
-            expressRes.headers = { ...expressRes.headers, ...field };
-          }
-          return expressRes;
-        },
-        
-        status: (code: number) => {
-          expressRes.statusCode = code;
-          return {
-            send: (body: any) => {
-              expressRes.body = typeof body === 'string' ? body : JSON.stringify(body);
-              expressRes.finished = true;
-              
-              // Resolve the response promise
-              const responseHeaders = new Headers();
-              for (const [key, value] of Object.entries(expressRes.headers)) {
-                responseHeaders.set(key, value);
-              }
-              responseResolve(new Response(expressRes.body, {
-                status: expressRes.statusCode,
-                headers: responseHeaders
-              }));
-              
-              return expressRes;
-            },
-            json: (body: any) => {
-              expressRes.headers['Content-Type'] = 'application/json';
-              expressRes.body = JSON.stringify(body);
-              expressRes.finished = true;
-              
-              // Resolve the response promise
-              const responseHeaders = new Headers();
-              for (const [key, value] of Object.entries(expressRes.headers)) {
-                responseHeaders.set(key, value);
-              }
-              responseResolve(new Response(expressRes.body, {
-                status: expressRes.statusCode,
-                headers: responseHeaders
-              }));
-              
-              return expressRes;
-            }
-          };
-        },
-        
-        json: (body: any) => {
-          expressRes.headers['Content-Type'] = 'application/json';
-          expressRes.body = JSON.stringify(body);
-          expressRes.finished = true;
-          
-          // Resolve the response promise
-          const responseHeaders = new Headers();
-          for (const [key, value] of Object.entries(expressRes.headers)) {
-            responseHeaders.set(key, value);
-          }
-          responseResolve(new Response(expressRes.body, {
-            status: expressRes.statusCode,
-            headers: responseHeaders
-          }));
-          
-          return expressRes;
-        },
-        
-        send: (body: any) => {
-          expressRes.body = typeof body === 'string' ? body : JSON.stringify(body);
-          expressRes.finished = true;
-          
-          // Resolve the response promise
-          const responseHeaders = new Headers();
-          for (const [key, value] of Object.entries(expressRes.headers)) {
-            responseHeaders.set(key, value);
-          }
-          responseResolve(new Response(expressRes.body, {
-            status: expressRes.statusCode,
-            headers: responseHeaders
-          }));
-          
-          return expressRes;
-        },
-        
-        end: (chunk?: any) => {
-          if (chunk) {
-            expressRes.body = typeof chunk === 'string' ? chunk : JSON.stringify(chunk);
-          }
-          expressRes.finished = true;
-          
-          // Resolve the response promise
-          const responseHeaders = new Headers();
-          for (const [key, value] of Object.entries(expressRes.headers)) {
-            responseHeaders.set(key, value);
-          }
-          responseResolve(new Response(expressRes.body, {
-            status: expressRes.statusCode,
-            headers: responseHeaders
-          }));
-          
-          return expressRes;
-        },
-        
-        // Event handling for compatibility with SSE
-        on: (event: string, handler: (...args: any[]) => void) => {
-          // We'll add minimal event handling for close events
-          if (event === 'close') {
-            // Nothing to do in this adapter
-          }
-          return expressRes;
-        },
-        
-        // Add methods for SSE
-        flushHeaders: () => {
-          expressRes.headersSent = true;
-          return expressRes;
-        },
-        
-        write: (chunk: string) => {
-          expressRes.body += chunk;
-          return true;
-        }
-      };
-      
-      // Create a transport for this request
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => this.sessionId,
-        onsessioninitialized: (sessionId) => {
-          console.log(`Session initialized: ${sessionId}`);
-        }
-      });
-      
-      // Connect our MCP server to this transport
-      await this.server.connect(transport);
-      
-      // Process the request through the transport
-      // This will call the appropriate handlers based on the request
-      // Use type assertions to bypass type checking since we're providing a compatible interface
-      await (transport as any).handleRequest(expressReq as any, expressRes as any, body);
-      
-      // Return the response captured by our promise
-      return responsePromise;
+      if (tool.execution?.endpoint) {
+        return await this.xanoClient.executeFunction(tool.execution.endpoint, args, sessionId, userId);
+      } else {
+        throw new Error(`Tool has no endpoint defined: ${toolName}`);
+      }
     } catch (error) {
-      console.error('Error processing MCP request:', error);
-      return new Response(JSON.stringify({ error: 'Internal server error' }), {
-        status: 500,
+      console.error(`Error executing tool ${toolName}:`, error);
+      throw error;
+    }
+  }
+  
+  // Handler for SSE connections
+  async onSSE(path: string): Promise<Response> {
+    console.log(`Setting up SSE connection on path: ${path}`);
+    
+    // Prepare headers for SSE response with proper protocol identifiers
+    const headers = new Headers({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'MCP-Available-Transports': 'streamable-http',
+      'MCP-Transport': 'streamable-http'
+    });
+    
+    // Authentication was already handled in processRequest
+    // Forward to parent class implementation but ensure we're setting the proper headers
+    // by creating a custom transformer that adds our headers
+    const sseResponse = await super.onSSE(path);
+    
+    // Create a new response with our enhanced headers
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    
+    // Pipe the original response body to our writer
+    sseResponse.body?.pipeTo(writable).catch(error => {
+      console.error(`Error in SSE stream: ${error.message}`);
+    });
+    
+    return new Response(readable, {
+      status: 200,
+      headers
+    });
+  }
+  
+  // Handle auth and route the request to the appropriate transport
+  async processRequest(request: Request): Promise<Response> {
+    try {
+      // Extract auth params and session ID if present
+      const url = new URL(request.url);
+      const authToken = url.searchParams.get('auth_token');
+      const userId = url.searchParams.get('user_id');
+      
+      // Extract sessionId from URL parameters (new Streamable HTTP format)
+      // or generate a new one if not provided
+      const urlSessionId = url.searchParams.get('sessionId');
+      if (urlSessionId) {
+        console.log(`Using provided session ID from URL: ${urlSessionId}`);
+        this.sessionId = urlSessionId;
+      } else if (!this.sessionId) {
+        // Generate a new session ID if we don't have one yet
+        this.sessionId = crypto.randomUUID();
+        console.log(`Generated new session ID: ${this.sessionId}`);
+      }
+      
+      // Check for authentication in multiple places:
+      // 1. URL parameters (backward compatibility)
+      // 2. Authorization header (Bearer token)
+      // 3. Request payload (from initialize request)
+      
+      // First check URL parameters (already extracted above)
+      let finalAuthToken = authToken;
+      let finalUserId = userId;
+      
+      // Next check Authorization header
+      if (!finalAuthToken) {
+        const authHeader = request.headers.get('Authorization');
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          finalAuthToken = authHeader.substring(7);
+          console.log("Bearer token auth detected from header");
+          
+          // With Bearer auth, we may need to extract/fetch the user ID
+          // For simplicity, we'll use the token itself as the user ID if not otherwise provided
+          finalUserId = finalUserId || 'bearer-user';
+        }
+      }
+      
+      // Setup authentication if provided through any mechanism
+      if (finalAuthToken && finalUserId) {
+        console.log(`Authentication detected for user: ${finalUserId}`);
+        
+        // Update authentication state
+        this.setState({
+          tools: this.state?.tools || [],
+          sessionInfo: {
+            userId: finalUserId,
+            lastAuthenticated: Date.now()
+          },
+          authenticated: true,
+          lastActivityTime: Date.now()
+        });
+        
+        // Set up auth props for backward compatibility
+        this.props = {
+          accessToken: finalAuthToken,
+          user: { id: finalUserId }
+        };
+        this.xanoClient.setUserToken(finalAuthToken);
+
+        try {
+          console.log(`Making POST request to ${XANO_BASE_URL}/api:KOMHCtw6/mcp_connect`);
+          await this.xanoClient.registerSession(
+            this.sessionId, 
+            userId, 
+            { name: "mcp-client", version: "1.0.0" }
+          );
+          console.log("Successfully registered session with Xano");
+          
+          // Try to register tools after successful auth and session registration
+          // But don't fail the request if tool registration fails
+          try {
+            if (!this.toolsRegistered) {
+              await this.registerTools();
+            }
+          } catch (toolError) {
+            console.warn("Tool registration failed, but continuing with request processing:", toolError);
+            // Don't throw - continue processing the request even if tools can't be loaded
+          }
+        } catch (error) {
+          console.error("Failed to register session with Xano:", error);
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            error: {
+              code: -32000,
+              message: `Authentication error: ${error.message}`
+            },
+            id: null
+          }), { 
+            status: 401, 
+            headers: { 
+              'Content-Type': 'application/json', 
+              'MCP-Available-Transports': 'streamable-http'
+            }
+          });
+        }
+      } else {
+        console.log("No authentication token provided");
+      }
+      
+      // Check if the client is requesting SSE transport
+      const acceptHeader = request.headers.get('accept') || '';
+      const isSSE = acceptHeader.includes('text/event-stream');
+      console.log(`Client requested ${isSSE ? 'SSE' : 'Streamable HTTP'} transport based on Accept header`);
+      
+      if (isSSE) {
+        // For SSE connections, call the parent class's onSSE method
+        const path = url.pathname;
+        console.log(`Handling SSE connection on path: ${path}`);
+        try {
+          return await this.onSSE(path);
+        } catch (error) {
+          console.error(`Error in onSSE: ${error.message}`);
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            error: {
+              code: -32003,
+              message: `SSE Error: ${error.message}`
+            },
+            id: null
+          }), { 
+            status: 500, 
+            headers: { 
+              'Content-Type': 'application/json',
+              'MCP-Available-Transports': 'streamable-http'
+            }
+          });
+        }
+      } else {
+        // For standard HTTP requests, use proper JSON-RPC processing
+        console.log("Processing standard HTTP request");
+        
+        try {
+          // Parse the JSON-RPC request
+          let jsonRpcRequest;
+          try {
+            const bodyText = await request.text();
+            jsonRpcRequest = bodyText ? JSON.parse(bodyText) : { jsonrpc: "2.0", method: "getTools", id: 1 };
+            console.log("Received JSON-RPC request:", JSON.stringify(jsonRpcRequest));
+          } catch (parseError) {
+            console.log("Request body is empty or invalid JSON, using default request");
+            jsonRpcRequest = { jsonrpc: "2.0", method: "getTools", id: 1 };
+          }
+          
+          // Process different methods
+          if (jsonRpcRequest.method === "initialize") {
+            // Extract client info from request if available
+            const clientInfo = jsonRpcRequest.params?.clientInfo || { name: "unknown", version: "0.0.0" };
+            const protocolVersion = jsonRpcRequest.params?.protocolVersion || "2023-03-01";
+            
+            console.log(`Client initialize request: ${clientInfo.name} v${clientInfo.version}, protocol ${protocolVersion}`);
+            
+            // Prepare initialization response with session ID and protocol version
+            return new Response(JSON.stringify({
+              jsonrpc: "2.0",
+              result: {
+                server: {
+                  name: "Xano MCP",
+                  version: "1.0.0",
+                  protocolVersion: "2024-11-05"
+                },
+                capabilities: {
+                  toolExecution: true,
+                  sampling: {}
+                },
+                session: {
+                  id: this.sessionId,
+                  authenticated: !!this.props?.accessToken
+                }
+              },
+              id: jsonRpcRequest.id || 1
+            }), { 
+              status: 200, 
+              headers: { 
+                'Content-Type': 'application/json',
+                'MCP-Available-Transports': 'streamable-http'
+              }
+            });
+          } 
+          else if (jsonRpcRequest.method === "getTools") {
+            // Get tools and return them
+            try {
+              // Try to make sure tools are registered, but don't fail if we can't
+              if (!this.toolsRegistered) {
+                await this.registerTools();
+              }
+            } catch (toolError) {
+              console.warn("Failed to load tools from Xano, using empty tools list", toolError);
+              // Continue with empty tools list if we can't load from Xano
+            }
+            
+            // Use MCPServer's built-in handler to get the tools, or empty array if none registered
+            let toolsList = [];
+            try {
+              toolsList = Object.values(this.server._registeredTools || {})
+                .filter(tool => tool.enabled)
+                .map(tool => ({
+                  name: tool.name || "",
+                  description: tool.description || "",
+                  inputSchema: tool._inputSchema || {}
+                }));
+            } catch (error) {
+              console.warn("Error accessing registered tools, using empty list", error);
+            }
+            
+            return new Response(JSON.stringify({
+              jsonrpc: "2.0",
+              result: { tools: toolsList },
+              id: jsonRpcRequest.id || 1
+            }), { 
+              status: 200, 
+              headers: { 'Content-Type': 'application/json' }
+            });
+          } 
+          else if (jsonRpcRequest.method === "executeTool") {
+            const toolName = jsonRpcRequest.params?.name;
+            const args = jsonRpcRequest.params?.arguments || {};
+            
+            if (!toolName) {
+              return new Response(JSON.stringify({
+                jsonrpc: "2.0",
+                error: {
+                  code: -32602,
+                  message: "Missing tool name"
+                },
+                id: jsonRpcRequest.id || 1
+              }), { 
+                status: 400, 
+                headers: { 'Content-Type': 'application/json' }
+              });
+            }
+            
+            try {
+              // Execute the tool
+              const result = await this.executeTool(toolName, args);
+              
+              return new Response(JSON.stringify({
+                jsonrpc: "2.0",
+                result,
+                id: jsonRpcRequest.id || 1
+              }), { 
+                status: 200, 
+                headers: { 'Content-Type': 'application/json' }
+              });
+            } catch (toolError) {
+              return new Response(JSON.stringify({
+                jsonrpc: "2.0",
+                error: {
+                  code: -32603,
+                  message: `Tool execution failed: ${toolError.message}`
+                },
+                id: jsonRpcRequest.id || 1
+              }), { 
+                status: 500, 
+                headers: { 'Content-Type': 'application/json' }
+              });
+            }
+          } else {
+            // Unknown method
+            return new Response(JSON.stringify({
+              jsonrpc: "2.0",
+              error: {
+                code: -32601,
+                message: `Method not found: ${jsonRpcRequest.method}`
+              },
+              id: jsonRpcRequest.id || 1
+            }), { 
+              status: 400, 
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+        } catch (error) {
+          console.error(`Error handling HTTP request: ${error.message}`);
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            error: {
+              code: -32603,
+              message: `Internal server error: ${error.message}`
+            },
+            id: null
+          }), { 
+            status: 500, 
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Error processing request:", error);
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        error: {
+          code: -32603,
+          message: `Server error: ${error.message}`
+        },
+        id: null
+      }), { 
+        status: 500, 
         headers: { 'Content-Type': 'application/json' }
       });
     }
   }
   
-  // Cloudflare Durable Object entrypoint
-  // Explicitly expose fetch so that the runtime finds it. We forward to our
-  // existing `connect()` method, which handles the logic.
-  // This prevents the runtime error: "Handler does not export a fetch() function."
-  fetch(request: Request) {
-    return this.connect(request);
-  }
-
-  // Fetch tool definitions from Xano
-  async fetchToolDefinitions() {
-    try {
-      console.log("Fetching tool definitions from Xano...");
-      const tools = await this.xanoClient.getToolDefinitions();
-      
-      if (Array.isArray(tools)) {
-        this.setState({
-          ...this.state,
-          toolDefinitions: tools
-        });
-        console.log(`Loaded ${tools.length} tool definitions`);
-      } else {
-        console.error("Invalid tool definitions format", tools);
-      }
-    } catch (error) {
-      console.error("Error fetching tool definitions:", error);
-    }
-  }
-  
-  // Execute a tool dynamically based on its definition
-  async dynamicExecuteTool(toolDef: any, args: any) {
-    try {
-      console.log(`Executing tool ${toolDef.name} with args:`, args);
-      
-      // Map parameters according to the tool definition
-      const mappedParams: Record<string, any> = {};
-      if (toolDef.parameters && args) {
-        Object.keys(args).forEach(key => {
-          const param = toolDef.parameters[key];
-          if (param) {
-            mappedParams[param] = args[key];
-          } else {
-            mappedParams[key] = args[key];
-          }
-        });
-      }
-      
-      // Execute the function via Xano client
-      return await this.xanoClient.executeFunction(toolDef.endpoint, mappedParams);
-    } catch (error) {
-      console.error(`Error executing tool ${toolDef.name}:`, error);
-      throw error;
-    }
-  }
-
-  // Static mount method for use with OAuthProvider
-  static mount(path: string) {
-    return {
-      async fetch(request: Request, env: Env, ctx: any) {
-        console.log("Mount method handling request:", request.url);
-        
-        // Check for direct token authentication
-        const url = new URL(request.url);
-        const authToken = url.searchParams.get('auth_token');
-        const userId = url.searchParams.get('user_id');
-        
-        if (authToken && userId) {
-          console.log("Mount method detected direct token auth, bypassing OAuth flow");
-          // Direct token auth - bypass OAuth flow
-          const id = env.MCP_OBJECT.idFromName("main");
-          const mcpObject = env.MCP_OBJECT.get(id);
-          return mcpObject.fetch(request);
-        } else {
-          console.log("No direct token auth, proceeding with normal flow");
-          // No direct token auth - proceed with normal flow
-          const id = env.MCP_OBJECT.idFromName("main");
-          const mcpObject = env.MCP_OBJECT.get(id);
-          return mcpObject.fetch(request);
-        }
-      }
+  // Main entry point for all requests
+  async fetch(request: Request): Promise<Response> {
+    // Enhanced CORS handling
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, X-Requested-With",
+      "Access-Control-Max-Age": "86400",
     };
+    
+    // Handle CORS preflight requests
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders
+      });
+    }
+    
+    try {
+      // Process the request with authentication handling first
+      const response = await this.processRequest(request.clone());
+      
+      // Add CORS headers to the response
+      const newHeaders = new Headers(response.headers);
+      Object.entries(corsHeaders).forEach(([key, value]) => {
+        newHeaders.set(key, value);
+      });
+      
+      // Return response with CORS headers
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: newHeaders
+      });
+    } catch (error) {
+      console.error("Error in fetch handler:", error);
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        error: {
+          code: -32603,
+          message: `Server error: ${error.message}`
+        },
+        id: null
+      }), { 
+        status: 500, 
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json"
+        }
+      });
+    }
   }
 }
 
-// Create a default handler that routes /sse to the Durable Object and anything
-// else to the existing `app` handler (if present)
-const defaultHandler = {
-  async fetch(request: Request, env: Env, ctx: any) {
-    const url = new URL(request.url);
-    if (url.pathname.startsWith("/sse")) {
-      // Forward to the Durable Object (bypasses OAuth checks)
-      return MyMCP.mount("/sse").fetch(request, env, ctx);
+// Simple request forwarder
+function createHandler() {
+  return {
+    async fetch(request: Request, env: Env, ctx: any) {
+      // Forward to the Durable Object
+      const id = env.MCP_OBJECT.idFromName("main");
+      const mcpObject = env.MCP_OBJECT.get(id);
+      
+      try {
+        return await mcpObject.fetch(request.clone());
+      } catch (error) {
+        console.error(`Error in MCP handler:`, error);
+        return new Response(`Error: ${error.message}`, { status: 500 });
+      }
     }
-    // Fallback to whatever the original app handler does
+  };
+}
+
+// Main worker handler
+const mcpHandler = {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    
+    // Handle Streamable HTTP transport via /mcp or /mcp/message endpoints
+    if (url.pathname.startsWith("/mcp")) {
+      // We support both /mcp (legacy) and /mcp/message (new Streamable HTTP)
+      console.log(`Main handler: forwarding to MCP endpoint: ${url.pathname}`);
+      return createHandler().fetch(request, env, ctx);
+    }
+    
+    // Fallback to app handler
     return (app as any).fetch(request, env, ctx);
   }
 };
 
-// Dummy API handler – never used because `apiRoute` is empty. We need this
-// solely to satisfy the type requirements of `OAuthProviderOptions`.
-const dummyApiHandler = {
-  fetch(_request: Request) {
-    return new Response("No API routes configured", { status: 501 });
-  }
-};
-
-// Export the OAuth provider. We do NOT configure `apiRoute` so the provider
-// will *not* attempt to treat /sse as a protected API route. Instead, every
-// request except the provider's own OAuth endpoints (/authorize, /token, /register)
-// will be passed straight through to our `defaultHandler`.
-export default new OAuthProvider({
-  apiRoute: [], // empty – we don't want the provider to intercept any API paths
-  apiHandler: dummyApiHandler as any,
-  defaultHandler: defaultHandler as any,
-  authorizeEndpoint: "/authorize",
-  tokenEndpoint: "/token",
-  clientRegistrationEndpoint: "/register",
-});
+export default mcpHandler;

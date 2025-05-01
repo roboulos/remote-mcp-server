@@ -115,19 +115,33 @@ export class XanoClient {
   }
 
   // Get list of tools
-  async getTools(): Promise<XanoTool[]> {
-    return this.request<XanoTool[]>('/api:FODXcugi/list_functions');
+  async getTools(userId?: string, sessionId?: string): Promise<XanoTool[]> {
+    return this.request<XanoTool[]>(
+      '/api:KOMHCtw6/list_functions',
+      'POST',
+      {
+        user_id: userId,
+        session_id: sessionId || 'default'
+      }
+    );
   }
   
   // Get tool definitions for MCP
-  async getToolDefinitions(): Promise<XanoTool[]> {
+  async getToolDefinitions(userId?: string, sessionId?: string): Promise<XanoTool[]> {
     // This is an alias for getTools that matches the method name used in the MCP implementation
-    return this.getTools();
+    return this.getTools(userId, sessionId);
   }
 
   // Get tool details
-  async getToolDetails(toolId: number): Promise<XanoTool> {
-    return this.request<XanoTool>(`/api:FODXcugi/get_function/${toolId}`);
+  async getToolDetails(toolId: number, userId?: string, sessionId?: string): Promise<XanoTool> {
+    return this.request<XanoTool>(
+      `/api:KOMHCtw6/get_function/${toolId}`,
+      'POST',
+      {
+        user_id: userId,
+        session_id: sessionId || 'default'
+      }
+    );
   }
 
   // Register a session
@@ -160,7 +174,8 @@ export class XanoClient {
   async executeFunction(
     functionName: string, 
     parameters: any, 
-    sessionId?: string
+    sessionId?: string,
+    userId?: string
   ): Promise<any> {
     return this.request<any>(
       '/api:KOMHCtw6/mcp_execute',
@@ -168,7 +183,8 @@ export class XanoClient {
       {
         function_name: functionName,
         parameters,
-        session_id: sessionId || 'default'
+        session_id: sessionId || 'default',
+        user_id: userId
       }
     );
   }
