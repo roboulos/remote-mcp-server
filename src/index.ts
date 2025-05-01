@@ -573,10 +573,15 @@ const mcpHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     
-    // Handle Streamable HTTP transport via /mcp or /mcp/message endpoints
+    // Handle Streamable HTTP transport via /mcp endpoints
     if (url.pathname.startsWith("/mcp")) {
-      // We support both /mcp (legacy) and /mcp/message (new Streamable HTTP)
       console.log(`Main handler: forwarding to MCP endpoint: ${url.pathname}`);
+      return createHandler().fetch(request, env, ctx);
+    }
+    
+    // Support legacy /sse endpoint for older clients
+    if (url.pathname === "/sse") {
+      console.log(`Main handler: forwarding to SSE endpoint`);
       return createHandler().fetch(request, env, ctx);
     }
     
