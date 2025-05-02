@@ -161,13 +161,16 @@ export class MyMCP extends McpAgent<MyMcpState> {
   async onSSE(path: string): Promise<Response> {
     console.log(`Setting up SSE connection on path: ${path}`);
     
+    // Create a text encoder to convert strings to binary data
+    const encoder = new TextEncoder();
+    
     // Create a new ReadableStream for our SSE response
     const self = this;
     const stream = new ReadableStream({
       start(controller) {
         // Send initial events that the Workers AI Playground expects
         // Send server info
-        controller.enqueue('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0"}\n\n');
+        controller.enqueue(encoder.encode('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0"}\n\n'));
         
         // Send the tools list
         const toolsListJson = JSON.stringify({
@@ -177,15 +180,15 @@ export class MyMCP extends McpAgent<MyMcpState> {
           },
           id: 1
         });
-        controller.enqueue(`event: tools_list\ndata: ${toolsListJson}\n\n`);
+        controller.enqueue(encoder.encode(`event: tools_list\ndata: ${toolsListJson}\n\n`));
         
         // Send a ready event
-        controller.enqueue('event: ready\ndata: {}\n\n');
+        controller.enqueue(encoder.encode('event: ready\ndata: {}\n\n'));
         
         // Keep the connection open
         const interval = setInterval(() => {
           // Send ping to keep connection alive
-          controller.enqueue('event: ping\ndata: {}\n\n');
+          controller.enqueue(encoder.encode('event: ping\ndata: {}\n\n'));
         }, 30000);
         
         // Clean up on close
