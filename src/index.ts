@@ -293,10 +293,11 @@ export class MyMCP extends McpAgent<MyMcpState> {
         // Send the tools list with the exact expected format
         const toolsListEvent = {
           jsonrpc: "2.0",
-          result: {
+          method: "tools_list",
+          params: {
             tools: strictlyFormattedTools
-          },
-          id: 1
+          }
+          // No id – this is a notification per MCP spec
         };
         
         // Stringify with null,2 for debugging clarity - remove in production if needed
