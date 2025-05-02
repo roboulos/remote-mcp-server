@@ -157,26 +157,35 @@ export class MyMCP extends McpAgent<MyMcpState> {
     }
   }
   
-  // Handler for SSE connections
+    // Handler for SSE connections
   async onSSE(path: string): Promise<Response> {
     console.log(`Setting up SSE connection on path: ${path}`);
     
     // Create a text encoder to convert strings to binary data
     const encoder = new TextEncoder();
     
+    // Fetch tools from Xano before creating the stream
+    const userId = this.props?.user ? (this.props.user as {id?: string}).id : undefined;
+    let tools = [];
+    try {
+      tools = await this.xanoClient.getTools(userId, this.sessionId);
+      console.log(`Fetched ${tools.length} tools from Xano for SSE response`);
+    } catch (error) {
+      console.error("Failed to get tools for SSE response:", error);
+    }
+    
     // Create a new ReadableStream for our SSE response
-    const self = this;
     const stream = new ReadableStream({
       start(controller) {
         // Send initial events that the Workers AI Playground expects
         // Send server info
         controller.enqueue(encoder.encode('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0"}\n\n'));
         
-        // Send the tools list
+        // Send the tools list with the tools we fetched directly from Xano
         const toolsListJson = JSON.stringify({
           jsonrpc: "2.0",
           result: {
-            tools: (self.state as MyMcpState)?.tools || []
+            tools: tools || []
           },
           id: 1
         });
