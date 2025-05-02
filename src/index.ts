@@ -44,9 +44,16 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
       // CASE 1: Use parameter_schema directly if it exists and is properly formatted
       if (tool.parameter_schema && typeof tool.parameter_schema === 'object') {
         console.log(`Tool ${tool.name} has parameter_schema object`);
-        mcp_tool.parameters.properties = tool.parameter_schema.properties || {};
-        mcp_tool.parameters.required = tool.parameter_schema.required || [];
-        return mcp_tool;
+        // Ensure the tool has the exact expected MCP format
+        return {
+          name: tool.name,
+          description: tool.description || '',
+          parameters: {
+            type: 'object',
+            properties: tool.parameter_schema.properties || {},
+            required: tool.parameter_schema.required || []
+          }
+        };
       }
       
       // CASE 2: Parse parameter_schema if it's a string
@@ -507,24 +514,19 @@ export class MyMCP extends McpAgent<MyMcpState> {
               // Continue with empty tools list if we can't load from Xano
             }
             
-            // Use MCPServer's built-in handler to get the tools, or empty array if none registered
-            // Get tools from the server and format them according to MCP spec
+            // Directly fetch tools from Xano instead of using server._registeredTools
             let toolsList = [];
             try {
-              // Use registered tools from the MCP server
-              const serverTools = Object.values(this.server._registeredTools || {})
-                .filter(tool => tool.enabled)
-                .map(tool => ({
-                  name: tool.name || "",
-                  description: tool.description || "",
-                  parameters: tool._inputSchema || {}
-                }));
-                
-              // Format tools using our unified formatter
-              toolsList = formatXanoToolsForMCP(serverTools);
+              // Fetch fresh tools directly from Xano - don't use server tools
+              const userId = this.props?.user ? (this.props.user as {id?: string}).id : undefined;
+              const xanoTools = await this.xanoClient.getTools(userId, this.sessionId);
+              console.log(`Got ${xanoTools.length} tools directly from Xano for JSON-RPC response`);
+              
+              // Use the same formatter that works for SSE
+              toolsList = formatXanoToolsForMCP(xanoTools);
               console.log(`Sending ${toolsList.length} formatted tools in JSON-RPC response`);
             } catch (error) {
-              console.warn("Error accessing or formatting registered tools, using empty list", error);
+              console.warn("Error getting tools from Xano, using empty list", error);
             }
             
             return new Response(JSON.stringify({
