@@ -163,10 +163,12 @@ export class MyMCP extends McpAgent<MyMcpState> {
     
     // Use TextEncoder to convert strings to Uint8Array for the stream
     const encoder = new TextEncoder();
+    console.log("Created TextEncoder");
     
     // Create a TransformStream to handle the SSE data
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();
+    console.log("Created TransformStream and writer");
     
     // Get the tools list - ensures we have the latest
     const userId = this.props?.user ? (this.props.user as {id?: string}).id : undefined;
@@ -181,11 +183,18 @@ export class MyMCP extends McpAgent<MyMcpState> {
     // SSE message format: 'event: EVENT_NAME\ndata: JSON_DATA\n\n'
     
     // Server info event
-    await writer.write(
-      encoder.encode('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0"}\n\n')
-    );
+    console.log("Sending server_info event");
+    try {
+      await writer.write(
+        encoder.encode('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0"}\n\n')
+      );
+      console.log("Server info event sent successfully");
+    } catch (error) {
+      console.error("Error sending server_info event:", error);
+    }
     
     // Tools list event
+    console.log("Preparing tools_list event");
     const toolsListJson = JSON.stringify({
       jsonrpc: "2.0",
       result: {
@@ -193,14 +202,26 @@ export class MyMCP extends McpAgent<MyMcpState> {
       },
       id: 1
     });
-    await writer.write(
-      encoder.encode(`event: tools_list\ndata: ${toolsListJson}\n\n`)
-    );
+    console.log("Tools JSON prepared:", tools ? tools.length : 0, "tools");
+    try {
+      await writer.write(
+        encoder.encode(`event: tools_list\ndata: ${toolsListJson}\n\n`)
+      );
+      console.log("Tools list event sent successfully");
+    } catch (error) {
+      console.error("Error sending tools_list event:", error);
+    }
     
     // Ready event
-    await writer.write(
-      encoder.encode('event: ready\ndata: {}\n\n')
-    );
+    console.log("Sending ready event");
+    try {
+      await writer.write(
+        encoder.encode('event: ready\ndata: {}\n\n')
+      );
+      console.log("Ready event sent successfully");
+    } catch (error) {
+      console.error("Error sending ready event:", error);
+    }
     
     // Set up ping interval to keep the connection alive
     const intervalId = setInterval(async () => {
