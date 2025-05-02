@@ -19,10 +19,12 @@ type MyMcpState = {
 // Utility to safely format Xano tools to MCP format
 function formatXanoToolsForMCP(xanoTools: any[]): any[] {
   try {
+    console.log('Raw tools data from Xano:', JSON.stringify(xanoTools, null, 2));
+    
     return (xanoTools || []).map(tool => {
       // Defensive programming - check if each field exists
-      if (!tool.name) {
-        console.warn("Tool missing name property:", tool);
+      if (!tool || !tool.name) {
+        console.warn("Tool missing name property:", JSON.stringify(tool));
         return null; // Skip invalid tools
       }
       
@@ -33,9 +35,26 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
         required: []
       };
       
-      if (Array.isArray(tool.parameters)) {
+      // Handle both parameter formats that might come from Xano
+      let toolParams;
+      try {
+        if (tool.parameters) {
+          toolParams = tool.parameters;
+        } else if (tool.parameter_schema) {
+          // Handle parameter_schema which might be a string or an object
+          if (typeof tool.parameter_schema === 'string') {
+            toolParams = JSON.parse(tool.parameter_schema);
+          } else {
+            toolParams = tool.parameter_schema;
+          }
+        }
+      } catch (parseError) {
+        console.warn(`Error parsing parameters for tool ${tool.name}:`, parseError);
+      }
+      
+      if (Array.isArray(toolParams)) {
         // Transform parameters array to JSON Schema format
-        parameters.properties = tool.parameters.reduce((acc: any, param: any) => {
+        parameters.properties = toolParams.reduce((acc: any, param: any) => {
           if (param && param.name) {
             acc[param.name] = {
               type: param.type || 'string',
@@ -52,9 +71,13 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
         }, {});
         
         // Extract required fields
-        parameters.required = tool.parameters
+        parameters.required = toolParams
           .filter((param: any) => param && param.required)
           .map((param: any) => param.name);
+      } else if (toolParams && typeof toolParams === 'object') {
+        // Handle case where parameters might be an object structure already
+        parameters.properties = toolParams.properties || {};
+        parameters.required = toolParams.required || [];
       }
       
       // Construct the tool in MCP format
@@ -66,12 +89,15 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
     }).filter(Boolean); // Remove any null entries from invalid tools
   } catch (error) {
     console.error("Error formatting tools for MCP:", error);
-    // Fallback to a simpler format 
-    return (xanoTools || []).map(tool => ({
-      name: tool.name || "unknown",
-      description: tool.description || "",
-      parameters: { type: "object", properties: {}, required: [] }
-    }));
+    // Fallback to a simpler format with better error handling
+    return (xanoTools || []).map(tool => {
+      if (!tool) return null;
+      return {
+        name: tool.name || "unknown",
+        description: tool.description || "",
+        parameters: { type: "object", properties: {}, required: [] }
+      };
+    }).filter(Boolean);
   }
 }
 
