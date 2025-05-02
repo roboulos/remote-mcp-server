@@ -30,11 +30,11 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
       
       console.log(`Processing tool: ${tool.name}`);
       
-      // Create a properly formatted MCP tool with schema
+      // Create a properly formatted MCP tool with schema - using inputSchema as per MCP spec
       const mcp_tool = {
         name: tool.name,
         description: tool.description || '',
-        parameters: {
+        inputSchema: {
           type: 'object',
           properties: {},
           required: []
@@ -48,7 +48,7 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
         return {
           name: tool.name,
           description: tool.description || '',
-          parameters: {
+          inputSchema: {
             type: 'object',
             properties: tool.parameter_schema.properties || {},
             required: tool.parameter_schema.required || []
@@ -61,8 +61,8 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
         if (tool.parameter_schema && typeof tool.parameter_schema === 'string') {
           console.log(`Tool ${tool.name} has parameter_schema string`);
           const parsed = JSON.parse(tool.parameter_schema);
-          mcp_tool.parameters.properties = parsed.properties || {};
-          mcp_tool.parameters.required = parsed.required || [];
+          mcp_tool.inputSchema.properties = parsed.properties || {};
+          mcp_tool.inputSchema.required = parsed.required || [];
           return mcp_tool;
         }
       } catch (parseError) {
@@ -72,7 +72,7 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
       // CASE 3: Fall back to parameters array if parameter_schema is not available
       if (Array.isArray(tool.parameters)) {
         console.log(`Tool ${tool.name} using parameters array`);
-        mcp_tool.parameters.properties = tool.parameters.reduce((acc: any, param: any) => {
+        mcp_tool.inputSchema.properties = tool.parameters.reduce((acc: any, param: any) => {
           if (param && param.name) {
             acc[param.name] = {
               type: param.type || 'string',
@@ -89,7 +89,7 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
         }, {});
         
         // Extract required fields
-        mcp_tool.parameters.required = tool.parameters
+        mcp_tool.inputSchema.required = tool.parameters
           .filter((param: any) => param && param.required)
           .map((param: any) => param.name);
       }
@@ -104,7 +104,7 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
       return {
         name: tool.name || "unknown",
         description: tool.description || "",
-        parameters: { type: "object", properties: {}, required: [] }
+        inputSchema: { type: "object", properties: {}, required: [] }
       };
     }).filter(Boolean);
   }
@@ -283,10 +283,10 @@ export class MyMCP extends McpAgent<MyMcpState> {
         const strictlyFormattedTools = formattedTools.map(tool => ({
           name: tool.name,
           description: tool.description,
-          parameters: {
+          inputSchema: {
             type: 'object',
-            properties: tool.parameters?.properties || {},
-            required: tool.parameters?.required || []
+            properties: tool.inputSchema?.properties || {},
+            required: tool.inputSchema?.required || []
           }
         }));
         
