@@ -16,6 +16,65 @@ type MyMcpState = {
   lastActivityTime: number;
 };
 
+// Utility to safely format Xano tools to MCP format
+function formatXanoToolsForMCP(xanoTools: any[]): any[] {
+  try {
+    return (xanoTools || []).map(tool => {
+      // Defensive programming - check if each field exists
+      if (!tool.name) {
+        console.warn("Tool missing name property:", tool);
+        return null; // Skip invalid tools
+      }
+      
+      // Format parameters according to JSON Schema specification as required by MCP
+      const parameters = {
+        type: 'object',
+        properties: {},
+        required: []
+      };
+      
+      if (Array.isArray(tool.parameters)) {
+        // Transform parameters array to JSON Schema format
+        parameters.properties = tool.parameters.reduce((acc: any, param: any) => {
+          if (param && param.name) {
+            acc[param.name] = {
+              type: param.type || 'string',
+              description: param.description || ''
+            };
+            
+            // Add additional schema properties if they exist
+            if (param.enum) acc[param.name].enum = param.enum;
+            if (param.minimum !== undefined) acc[param.name].minimum = param.minimum;
+            if (param.maximum !== undefined) acc[param.name].maximum = param.maximum;
+            if (param.default !== undefined) acc[param.name].default = param.default;
+          }
+          return acc;
+        }, {});
+        
+        // Extract required fields
+        parameters.required = tool.parameters
+          .filter((param: any) => param && param.required)
+          .map((param: any) => param.name);
+      }
+      
+      // Construct the tool in MCP format
+      return {
+        name: tool.name,
+        description: tool.description || '',
+        parameters: parameters
+      };
+    }).filter(Boolean); // Remove any null entries from invalid tools
+  } catch (error) {
+    console.error("Error formatting tools for MCP:", error);
+    // Fallback to a simpler format 
+    return (xanoTools || []).map(tool => ({
+      name: tool.name || "unknown",
+      description: tool.description || "",
+      parameters: { type: "object", properties: {}, required: [] }
+    }));
+  }
+}
+
 // Simple MCP implementation focused on Streamable HTTP transport
 export class MyMCP extends McpAgent<MyMcpState> {
   server: McpServer;
@@ -181,14 +240,18 @@ export class MyMCP extends McpAgent<MyMcpState> {
         // Send server info
         controller.enqueue(encoder.encode('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0"}\n\n'));
         
-        // Send the tools list with the tools we fetched directly from Xano
+        // Format tools to match MCP specification with resilience to API changes
+        const formattedTools = formatXanoToolsForMCP(tools);
+        
+        // Send the tools list with properly formatted tools
         const toolsListJson = JSON.stringify({
           jsonrpc: "2.0",
           result: {
-            tools: tools || []
+            tools: formattedTools
           },
           id: 1
         });
+        console.log(`Sending ${formattedTools.length} formatted tools to client`);
         controller.enqueue(encoder.encode(`event: tools_list\ndata: ${toolsListJson}\n\n`));
         
         // Send a ready event
@@ -417,17 +480,23 @@ export class MyMCP extends McpAgent<MyMcpState> {
             }
             
             // Use MCPServer's built-in handler to get the tools, or empty array if none registered
+            // Get tools from the server and format them according to MCP spec
             let toolsList = [];
             try {
-              toolsList = Object.values(this.server._registeredTools || {})
+              // Use registered tools from the MCP server
+              const serverTools = Object.values(this.server._registeredTools || {})
                 .filter(tool => tool.enabled)
                 .map(tool => ({
                   name: tool.name || "",
                   description: tool.description || "",
-                  inputSchema: tool._inputSchema || {}
+                  parameters: tool._inputSchema || {}
                 }));
+                
+              // Format tools using our unified formatter
+              toolsList = formatXanoToolsForMCP(serverTools);
+              console.log(`Sending ${toolsList.length} formatted tools in JSON-RPC response`);
             } catch (error) {
-              console.warn("Error accessing registered tools, using empty list", error);
+              console.warn("Error accessing or formatting registered tools, using empty list", error);
             }
             
             return new Response(JSON.stringify({
