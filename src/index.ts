@@ -161,43 +161,71 @@ export class MyMCP extends McpAgent<MyMcpState> {
   async onSSE(path: string): Promise<Response> {
     console.log(`Setting up SSE connection on path: ${path}`);
     
-    // Create a new ReadableStream for our SSE response
-    const self = this;
-    const stream = new ReadableStream({
-      start(controller) {
-        // Send initial events that the Workers AI Playground expects
-        // Send server info
-        controller.enqueue('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0"}\n\n');
-        
-        // Send the tools list
-        const toolsListJson = JSON.stringify({
-          jsonrpc: "2.0",
-          result: {
-            tools: (self.state as MyMcpState)?.tools || []
-          },
-          id: 1
-        });
-        controller.enqueue(`event: tools_list\ndata: ${toolsListJson}\n\n`);
-        
-        // Send a ready event
-        controller.enqueue('event: ready\ndata: {}\n\n');
-        
-        // Keep the connection open
-        const interval = setInterval(() => {
-          // Send ping to keep connection alive
-          controller.enqueue('event: ping\ndata: {}\n\n');
-        }, 30000);
-        
-        // Clean up on close
-        const cleanup = () => {
-          clearInterval(interval);
-        };
-        return cleanup;
-      }
+    // Use TextEncoder to convert strings to Uint8Array for the stream
+    const encoder = new TextEncoder();
+    
+    // Create a TransformStream to handle the SSE data
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    
+    // Get the tools list - ensures we have the latest
+    const userId = this.props?.user ? (this.props.user as {id?: string}).id : undefined;
+    let tools = [];
+    try {
+      tools = await this.xanoClient.getTools(userId, this.sessionId);
+    } catch (error) {
+      console.error("Failed to get tools for SSE response:", error);
+    }
+    
+    // Write the initial events that the Workers AI Playground expects
+    // SSE message format: 'event: EVENT_NAME\ndata: JSON_DATA\n\n'
+    
+    // Server info event
+    await writer.write(
+      encoder.encode('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0"}\n\n')
+    );
+    
+    // Tools list event
+    const toolsListJson = JSON.stringify({
+      jsonrpc: "2.0",
+      result: {
+        tools: tools || []
+      },
+      id: 1
     });
+    await writer.write(
+      encoder.encode(`event: tools_list\ndata: ${toolsListJson}\n\n`)
+    );
+    
+    // Ready event
+    await writer.write(
+      encoder.encode('event: ready\ndata: {}\n\n')
+    );
+    
+    // Set up ping interval to keep the connection alive
+    const intervalId = setInterval(async () => {
+      try {
+        await writer.write(
+          encoder.encode('event: ping\ndata: {}\n\n')
+        );
+      } catch (error) {
+        console.error("Error sending ping in SSE:", error);
+        clearInterval(intervalId);
+      }
+    }, 30000);
+    
+    // Handle cleanup when the connection is closed
+    // This will run in the background
+    setTimeout(() => {
+      // After 2 hours, close the stream if it's still open
+      clearInterval(intervalId);
+      writer.close().catch(error => {
+        console.error("Error closing SSE writer:", error);
+      });
+    }, 2 * 60 * 60 * 1000);
     
     // Return the SSE response with proper headers
-    return new Response(stream, {
+    return new Response(readable, {
       status: 200, 
       headers: {
         'Content-Type': 'text/event-stream',
