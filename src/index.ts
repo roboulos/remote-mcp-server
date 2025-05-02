@@ -272,24 +272,41 @@ export class MyMCP extends McpAgent<MyMcpState> {
     const stream = new ReadableStream({
       start(controller) {
         // Send initial events that the Workers AI Playground expects
-        // Send server info
-        controller.enqueue(encoder.encode('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0"}\n\n'));
+        // Send server info - use exact expected format with protocol version
+        controller.enqueue(encoder.encode('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0","protocolVersion":"2025-03-26"}\n\n'));
         
-        // Format tools to match MCP specification with resilience to API changes
+        // Format tools to match MCP specification
         const formattedTools = formatXanoToolsForMCP(tools);
         
-        // Send the tools list with properly formatted tools
-        const toolsListJson = JSON.stringify({
+        // Ensure each tool has the exact format expected by the Workers AI Playground
+        // The Playground is very strict about the format, especially parameter schemas
+        const strictlyFormattedTools = formattedTools.map(tool => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: {
+            type: 'object',
+            properties: tool.parameters?.properties || {},
+            required: tool.parameters?.required || []
+          }
+        }));
+        
+        // Send the tools list with the exact expected format
+        const toolsListEvent = {
           jsonrpc: "2.0",
           result: {
-            tools: formattedTools
+            tools: strictlyFormattedTools
           },
           id: 1
-        });
-        console.log(`Sending ${formattedTools.length} formatted tools to client`);
+        };
+        
+        // Stringify with null,2 for debugging clarity - remove in production if needed
+        const toolsListJson = JSON.stringify(toolsListEvent);
+        console.log(`Sending ${strictlyFormattedTools.length} formatted tools to client with strict MCP format`);
+        
+        // Send the tools_list event with the correct SSE format
         controller.enqueue(encoder.encode(`event: tools_list\ndata: ${toolsListJson}\n\n`));
         
-        // Send a ready event
+        // Send a ready event with empty object
         controller.enqueue(encoder.encode('event: ready\ndata: {}\n\n'));
         
         // Keep the connection open
