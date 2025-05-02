@@ -28,33 +28,44 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
         return null; // Skip invalid tools
       }
       
-      // Format parameters according to JSON Schema specification as required by MCP
-      const parameters = {
-        type: 'object',
-        properties: {},
-        required: []
+      console.log(`Processing tool: ${tool.name}`);
+      
+      // Create a properly formatted MCP tool with schema
+      const mcp_tool = {
+        name: tool.name,
+        description: tool.description || '',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: []
+        }
       };
       
-      // Handle both parameter formats that might come from Xano
-      let toolParams;
-      try {
-        if (tool.parameters) {
-          toolParams = tool.parameters;
-        } else if (tool.parameter_schema) {
-          // Handle parameter_schema which might be a string or an object
-          if (typeof tool.parameter_schema === 'string') {
-            toolParams = JSON.parse(tool.parameter_schema);
-          } else {
-            toolParams = tool.parameter_schema;
-          }
-        }
-      } catch (parseError) {
-        console.warn(`Error parsing parameters for tool ${tool.name}:`, parseError);
+      // CASE 1: Use parameter_schema directly if it exists and is properly formatted
+      if (tool.parameter_schema && typeof tool.parameter_schema === 'object') {
+        console.log(`Tool ${tool.name} has parameter_schema object`);
+        mcp_tool.parameters.properties = tool.parameter_schema.properties || {};
+        mcp_tool.parameters.required = tool.parameter_schema.required || [];
+        return mcp_tool;
       }
       
-      if (Array.isArray(toolParams)) {
-        // Transform parameters array to JSON Schema format
-        parameters.properties = toolParams.reduce((acc: any, param: any) => {
+      // CASE 2: Parse parameter_schema if it's a string
+      try {
+        if (tool.parameter_schema && typeof tool.parameter_schema === 'string') {
+          console.log(`Tool ${tool.name} has parameter_schema string`);
+          const parsed = JSON.parse(tool.parameter_schema);
+          mcp_tool.parameters.properties = parsed.properties || {};
+          mcp_tool.parameters.required = parsed.required || [];
+          return mcp_tool;
+        }
+      } catch (parseError) {
+        console.warn(`Error parsing parameter_schema for ${tool.name}:`, parseError);
+      }
+      
+      // CASE 3: Fall back to parameters array if parameter_schema is not available
+      if (Array.isArray(tool.parameters)) {
+        console.log(`Tool ${tool.name} using parameters array`);
+        mcp_tool.parameters.properties = tool.parameters.reduce((acc: any, param: any) => {
           if (param && param.name) {
             acc[param.name] = {
               type: param.type || 'string',
@@ -71,21 +82,12 @@ function formatXanoToolsForMCP(xanoTools: any[]): any[] {
         }, {});
         
         // Extract required fields
-        parameters.required = toolParams
+        mcp_tool.parameters.required = tool.parameters
           .filter((param: any) => param && param.required)
           .map((param: any) => param.name);
-      } else if (toolParams && typeof toolParams === 'object') {
-        // Handle case where parameters might be an object structure already
-        parameters.properties = toolParams.properties || {};
-        parameters.required = toolParams.required || [];
       }
       
-      // Construct the tool in MCP format
-      return {
-        name: tool.name,
-        description: tool.description || '',
-        parameters: parameters
-      };
+      return mcp_tool;
     }).filter(Boolean); // Remove any null entries from invalid tools
   } catch (error) {
     console.error("Error formatting tools for MCP:", error);
