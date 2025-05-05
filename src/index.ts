@@ -19,7 +19,7 @@ export interface Props {
 /**
  * Minimal MCP agent that delegates tool discovery & execution to Xano.
  */
-class MyMCP extends McpAgent<Env, unknown, Props> {
+export class MyMCP extends McpAgent<Env, unknown, Props> {
   /** Core MCP server instance exposed on `/sse`. */
   public readonly server = new McpServer({
     name: "Xano MCP Server",
