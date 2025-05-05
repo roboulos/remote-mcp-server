@@ -255,86 +255,112 @@ export class MyMCP extends McpAgent<MyMcpState> {
   async onSSE(path: string): Promise<Response> {
     console.log(`Setting up SSE connection on path: ${path}`);
     
-    // Create a text encoder to convert strings to binary data
-    const encoder = new TextEncoder();
-    
-    // Fetch tools from Xano before creating the stream
+    // 1. Pre-fetch all necessary data
     const userId = this.props?.user ? (this.props.user as {id?: string}).id : undefined;
     let tools = [];
+    
     try {
+      // Fetch tools before attempting to stream
       tools = await this.xanoClient.getTools(userId, this.sessionId);
       console.log(`Fetched ${tools.length} tools from Xano for SSE response`);
+      
+      // 2. Format tools and pre-encode messages before creating the stream
+      const encoder = new TextEncoder();
+      const formattedTools = formatXanoToolsForMCP(tools);
+      
+      // Create properly formatted tools with strict schema format
+      const strictlyFormattedTools = formattedTools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: {
+          type: 'object',
+          properties: tool.inputSchema?.properties || {},
+          required: tool.inputSchema?.required || []
+        }
+      }));
+      
+      // 3. Pre-encode messages to avoid async operations during streaming
+      const serverInfoEvent = encoder.encode(
+        'event: server_info\n' + 
+        'data: {"name":"Xano MCP","version":"1.0.0","protocolVersion":"2025-03-26"}\n\n'
+      );
+      
+      const toolsListEvent = {
+        jsonrpc: "2.0",
+        method: "tools_list",
+        params: {
+          tools: strictlyFormattedTools
+        }
+      };
+      const toolsListJson = JSON.stringify(toolsListEvent);
+      const toolsListEventEncoded = encoder.encode(`event: tools_list\ndata: ${toolsListJson}\n\n`);
+      
+      const readyEvent = encoder.encode('event: ready\ndata: {}\n\n');
+      const pingEvent = encoder.encode('event: ping\ndata: {}\n\n');
+      console.log(`Sending ${strictlyFormattedTools.length} formatted tools to client with strict MCP format`);
+      
+      // 4. Create stream with proper error handling
+      const stream = new ReadableStream({
+        start(controller) {
+          try {
+            // Send all events immediately in sequence
+            controller.enqueue(serverInfoEvent);
+            controller.enqueue(toolsListEventEncoded);
+            controller.enqueue(readyEvent);
+            
+            // Setup ping interval with error handling
+            const interval = setInterval(() => {
+              try {
+                controller.enqueue(pingEvent);
+              } catch (error) {
+                console.error("Ping enqueue failed:", error);
+                clearInterval(interval);
+              }
+            }, 30000);
+            
+            // Return cleanup function
+            return () => {
+              console.log("SSE connection closed, clearing interval");
+              clearInterval(interval);
+            };
+          } catch (error) {
+            console.error("Error in SSE stream start:", error);
+          }
+        }
+      });
+      
+      // 5. Return response with proper headers (including CORS)
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Allow-Headers': '*',
+          'MCP-Available-Transports': 'streamable-http',
+          'MCP-Transport': 'streamable-http'
+        }
+      });
     } catch (error) {
-      console.error("Failed to get tools for SSE response:", error);
+      // 6. Graceful error handling for pre-stream failures
+      console.error("Failed to setup SSE connection:", error);
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        error: {
+          code: -32603,
+          message: `SSE setup failed: ${error.message}`
+        },
+        id: null
+      }), {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        }
+      });
     }
-    
-    // Create a new ReadableStream for our SSE response
-    const stream = new ReadableStream({
-      start(controller) {
-        // Send initial events that the Workers AI Playground expects
-        // Send server info - use exact expected format with protocol version
-        controller.enqueue(encoder.encode('event: server_info\ndata: {"name":"Xano MCP","version":"1.0.0","protocolVersion":"2025-03-26"}\n\n'));
-        
-        // Format tools to match MCP specification
-        const formattedTools = formatXanoToolsForMCP(tools);
-        
-        // Ensure each tool has the exact format expected by the Workers AI Playground
-        // The Playground is very strict about the format, especially parameter schemas
-        const strictlyFormattedTools = formattedTools.map(tool => ({
-          name: tool.name,
-          description: tool.description,
-          inputSchema: {
-            type: 'object',
-            properties: tool.inputSchema?.properties || {},
-            required: tool.inputSchema?.required || []
-          }
-        }));
-        
-        // Send the tools list with the exact expected format
-        const toolsListEvent = {
-          jsonrpc: "2.0",
-          method: "tools_list",
-          params: {
-            tools: strictlyFormattedTools
-          }
-          // No id – this is a notification per MCP spec
-        };
-        
-        // Stringify with null,2 for debugging clarity - remove in production if needed
-        const toolsListJson = JSON.stringify(toolsListEvent);
-        console.log(`Sending ${strictlyFormattedTools.length} formatted tools to client with strict MCP format`);
-        
-        // Send the tools_list event with the correct SSE format
-        controller.enqueue(encoder.encode(`event: tools_list\ndata: ${toolsListJson}\n\n`));
-        
-        // Send a ready event with empty object
-        controller.enqueue(encoder.encode('event: ready\ndata: {}\n\n'));
-        
-        // Keep the connection open
-        const interval = setInterval(() => {
-          // Send ping to keep connection alive
-          controller.enqueue(encoder.encode('event: ping\ndata: {}\n\n'));
-        }, 30000);
-        
-        // Clean up on close
-        const cleanup = () => {
-          clearInterval(interval);
-        };
-        return cleanup;
-      }
-    });
-    
-    // Return the SSE response with proper headers
-    return new Response(stream, {
-      status: 200, 
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'MCP-Available-Transports': 'streamable-http',
-        'MCP-Transport': 'streamable-http'
-      }
-    });
   }
   
   // Handle auth and route the request to the appropriate transport
