@@ -32,7 +32,8 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
     return this._xano;
   }
 
-    private _initialized = false;
+  private _initialized = false;
+  private _registeredTools = new Set<string>();
 
   /**
    * Handle fetch requests to the Durable Object
@@ -46,18 +47,22 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
       return new Response("Missing required auth_token and user_id parameters", { status: 400 });
     }
 
-    // Set props for this session
-    this.props = {
-      accessToken: authToken,
-      user: { id: userId }
-    };
-
     try {
+      // Set props for this session
+      this.props = {
+        accessToken: authToken,
+        user: { id: userId }
+      };
+      
+      // Set the sessionId explicitly - needed for Xano calls
+      this.sessionId = url.searchParams.get("session_id") || crypto.randomUUID();
+
       // Initialize on first request
       if (!this._initialized) {
         await this.init();
         this._initialized = true;
       }
+      
       return await this.server.fetch(request);
     } catch (error) {
       console.error("Error in MyMCP fetch:", error);
@@ -67,6 +72,8 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
 
   /** Initialize MCP server with tools */
   async init() {
+    console.log("Initializing MCP server for session:", this.sessionId);
+    
     // 1. Let Xano know we started a session (best-effort).
     try {
       await this.xano.registerSession(this.sessionId, this.props.user.id, {
@@ -87,30 +94,47 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
 
     // 3. Register each tool with a permissive schema that accepts any JSON.
     tools.forEach((tool) => {
+      if (this._registeredTools.has(tool.name)) {
+        console.log(`Tool ${tool.name} already registered, skipping`);
+        return;
+      }
+      
       const schema = z.record(z.any());
-      this.server.tool(
-        tool.name,
-        tool.description ?? "",
-        schema,
-        async (args) => {
-          const result = await this.xano.executeFunction(
-            tool.name,
-            args ?? {},
-            this.sessionId,
-            this.props.user.id,
-          );
-          return { content: [{ type: "json", json: result }] } as const;
-        },
-      );
+      try {
+        this.server.tool(
+          tool.name,
+          tool.description ?? "",
+          schema,
+          async (args) => {
+            const result = await this.xano.executeFunction(
+              tool.name,
+              args ?? {},
+              this.sessionId,
+              this.props.user.id,
+            );
+            return { content: [{ type: "json", json: result }] } as const;
+          },
+        );
+        this._registeredTools.add(tool.name);
+      } catch (err) {
+        console.error(`Error registering tool ${tool.name}:`, err);
+      }
     });
 
     // 4. Bonus sample "add" tool (always available).
-    this.server.tool(
-      "add",
-      "Add two numbers on the edge",
-      { a: z.number(), b: z.number() },
-      async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] }),
-    );
+    if (!this._registeredTools.has("add")) {
+      try {
+        this.server.tool(
+          "add",
+          "Add two numbers on the edge",
+          { a: z.number(), b: z.number() },
+          async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] }),
+        );
+        this._registeredTools.add("add");
+      } catch (err) {
+        console.error("Error registering add tool:", err);
+      }
+    }
   }
 }
 
@@ -124,10 +148,28 @@ export default {
     
     // Handle SSE requests for MCP
     if (url.pathname === "/sse") {
-      // Create a new unique ID for this DO instance
-      const id = env.MCP_OBJECT.newUniqueId();
+      // Always use the same DO ID for the same auth token/user ID combo
+      // This ensures we don't create a new DO for reconnections
+      const authToken = url.searchParams.get("auth_token") || "";
+      const userId = url.searchParams.get("user_id") || "";
+      
+      // Create a stable ID based on the auth token and user ID
+      const sessionIdBasis = `${authToken}:${userId}`;
+      // Use a hash of the credentials as the stable DO ID
+      const id = env.MCP_OBJECT.idFromName(sessionIdBasis);
+      
       // Get a stub for the DO with this ID
       const stub = env.MCP_OBJECT.get(id);
+      
+      // Generate session ID if not provided
+      if (!url.searchParams.get("session_id")) {
+        url.searchParams.set("session_id", crypto.randomUUID());
+        // Reconstruct the request with the session ID
+        const newRequest = new Request(url, request);
+        // Forward the enhanced request to the DO
+        return stub.fetch(newRequest);
+      }
+      
       // Forward the request to the DO
       return stub.fetch(request);
     }
