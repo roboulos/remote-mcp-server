@@ -1,4 +1,3 @@
-import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -7,12 +6,11 @@ import app from "./app";
 import { XanoClient } from "./xano-client";
 
 /**
- * Props persisted by the OAuth flow (`/callback` in app.ts`).
+ * Props for authenticated sessions - passed directly via URL parameters
  */
 export interface Props {
   user: { id: string };
   accessToken: string;
-  permissions?: string[];
   [key: string]: unknown;
 }
 
@@ -32,6 +30,27 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
       this._xano = new XanoClient(this.env.XANO_BASE_URL, this.props.accessToken);
     }
     return this._xano;
+  }
+
+  /**
+   * Extract token and user ID from the first request
+   */
+  async onConnect(request: Request) {
+    const url = new URL(request.url);
+    const authToken = url.searchParams.get("auth_token");
+    const userId = url.searchParams.get("user_id");
+
+    if (!authToken || !userId) {
+      throw new Error("Missing required auth_token and user_id parameters");
+    }
+
+    // Set props for this session
+    this.props = {
+      accessToken: authToken,
+      user: { id: userId }
+    };
+
+    return super.onConnect(request);
   }
 
   /** Called once per authenticated session. */
@@ -84,14 +103,19 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
 }
 
 // ---------------------------------------------------------------------------
-// Worker entry: combine OAuthProvider for login + MCP API for /sse
+// Main worker entry point - route requests appropriately
 // ---------------------------------------------------------------------------
 
-export default new OAuthProvider({
-  apiRoute: "/sse",
-  apiHandler: MyMCP.mount("/sse") as any,
-  defaultHandler: app as any,
-  authorizeEndpoint: "/authorize",
-  tokenEndpoint: "/token",
-  clientRegistrationEndpoint: "/register",
-});
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    const url = new URL(request.url);
+    
+    // Handle SSE requests for MCP
+    if (url.pathname === "/sse") {
+      return env.MCP_OBJECT.get(env.MCP_OBJECT.newUniqueId()).fetch(request);
+    }
+    
+    // Everything else goes to the app (home page, health check)
+    return app.fetch(request, env, ctx);
+  },
+};

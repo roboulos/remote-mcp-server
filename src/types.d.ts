@@ -1,23 +1,9 @@
-import type { DurableObjectState, DurableObjectNamespace, KVNamespace } from '@cloudflare/workers-types';
-// Extend OAuthHelpers with missing methods
-declare module '@cloudflare/workers-oauth-provider' {
-  interface OAuthHelpers {
-    parseAuthRequest(request: Request): Promise<any>;
-    completeAuthorization(options: any): Promise<{redirectTo: string}>;
-    handleTokenRequest(request: Request): Promise<Response>;
-    handleRegistrationRequest(request: Request): Promise<Response>;
-  }
-}
-
-// Import OAuthHelpers type for use in Env interface
-import type { OAuthHelpers } from '@cloudflare/workers-oauth-provider';
+import type { DurableObjectState, DurableObjectNamespace } from '@cloudflare/workers-types';
 
 // Define the environment interface
 export interface Env {
   MCP_OBJECT: DurableObjectNamespace;
   XANO_BASE_URL: string;
-  OAUTH_KV: KVNamespace;
-  OAUTH_PROVIDER: OAuthHelpers;
 }
 
 declare module '@modelcontextprotocol/sdk' {
