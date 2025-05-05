@@ -1,5 +1,5 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
-import { McpAgent } from "@modelcontextprotocol/sdk";
+import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./types";
@@ -7,68 +7,59 @@ import app from "./app";
 import { XanoClient } from "./xano-client";
 
 /**
- * Shape of the props object attached to each authenticated session by the
- * OAuth provider. These values come from the `/callback` handler in
- * `app.ts`, which stores them via `completeAuthorization`.
+ * Props persisted by the OAuth flow (`/callback` in app.ts`).
  */
 export interface Props {
   user: { id: string };
   accessToken: string;
-  /** Additional metadata or permissions the user may have */
   permissions?: string[];
   [key: string]: unknown;
 }
 
 /**
- * A **minimal** McpAgent implementation that delegates all real work to Xano:
- *   • Authentication: handled by the OAuth provider (token + user id)
- *   • Tool definitions: fetched from Xano via `list_functions`
- *   • Tool execution: proxied to Xano via `mcp_execute`
+ * Minimal MCP agent that delegates tool discovery & execution to Xano.
  */
 class MyMCP extends McpAgent<Env, unknown, Props> {
-  /** SDK-level MCP server instance exposed over `/sse` */
+  /** Core MCP server instance exposed on `/sse`. */
   public readonly server = new McpServer({
     name: "Xano MCP Server",
     version: "1.0.0",
   });
 
-  /** Lazily initialised Xano client (per session) */
-  private get xano(): XanoClient {
+  private _xano?: XanoClient;
+  private get xano() {
     if (!this._xano) {
       this._xano = new XanoClient(this.env.XANO_BASE_URL, this.props.accessToken);
     }
     return this._xano;
   }
-  private _xano?: XanoClient;
 
-  /** Called automatically by `McpAgent` exactly once per session */
+  /** Called once per authenticated session. */
   async init() {
-    // Ensure the session is registered on Xano so it can track tool usage.
+    // 1. Let Xano know we started a session (best-effort).
     try {
       await this.xano.registerSession(this.sessionId, this.props.user.id, {
         name: "remote-mcp-server",
         version: "1.0.0",
       });
     } catch (err) {
-      console.error("Failed to register session with Xano", err);
+      console.warn("Unable to register session with Xano", err);
     }
 
-    // Retrieve all available tool definitions for this user.
-    let tools;
+    // 2. Fetch tool definitions for this user.
+    let tools = [] as Awaited<ReturnType<typeof this.xano.getToolDefinitions>>;
     try {
       tools = await this.xano.getToolDefinitions(this.props.user.id, this.sessionId);
     } catch (err) {
-      console.error("Failed to fetch tool definitions from Xano", err);
-      tools = [];
+      console.error("Failed to load tool definitions from Xano", err);
     }
 
-    // Register each tool with the MCP server. We use a very permissive Zod
-    // schema so we don’t need to perfectly mirror Xano’s parameter schema.
+    // 3. Register each tool with a permissive schema that accepts any JSON.
     tools.forEach((tool) => {
       const schema = z.record(z.any());
       this.server.tool(
         tool.name,
-        tool.description || "",
+        tool.description ?? "",
         schema,
         async (args) => {
           const result = await this.xano.executeFunction(
@@ -81,6 +72,14 @@ class MyMCP extends McpAgent<Env, unknown, Props> {
         },
       );
     });
+
+    // 4. Bonus sample "add" tool (always available).
+    this.server.tool(
+      "add",
+      "Add two numbers on the edge",
+      { a: z.number(), b: z.number() },
+      async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] }),
+    );
   }
 }
 
