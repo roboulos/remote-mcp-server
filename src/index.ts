@@ -63,7 +63,8 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
         this._initialized = true;
       }
       
-      return await this.server.fetch(request);
+      // Use connect method from the parent McpAgent class
+      return await this.connect(request);
     } catch (error) {
       console.error("Error in MyMCP fetch:", error);
       return new Response(`Internal Server Error: ${error.message}`, { status: 500 });
