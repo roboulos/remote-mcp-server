@@ -24,6 +24,7 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
     name: "Xano MCP Server",
     version: "1.0.0",
   });
+  public sessionId!: string;
 
   private _xano?: XanoClient;
   private get xano() {
@@ -31,6 +32,106 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
       this._xano = new XanoClient(this.env.XANO_BASE_URL, this.props.accessToken);
     }
     return this._xano;
+  }
+  
+  /**
+   * Handle HTTP requests according to the MCP protocol.
+   * GET requests use SSE for streaming, POST requests use JSON-RPC.
+   */
+  async fetch(request: Request): Promise<Response> {
+    // For GET requests, set up SSE transport
+    if (request.method === "GET") {
+      // Create a TransformStream for the SSE response
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
+      
+      // Create a proper SSE transport with all required methods
+      const transport = {
+        type: "sse",
+        start: async () => {
+          // Send the initial connection event
+          await writer.write(new TextEncoder().encode(`event: open
+data: {"sessionId":"${this.sessionId}"}
+
+`));
+        },
+        send: async (message: string) => {
+          await writer.write(new TextEncoder().encode(`data: ${message}
+
+`));
+        },
+        close: async () => {
+          await writer.close();
+        }
+      };
+      
+      // Connect the transport to the MCP server
+      await this.server.connect(transport);
+      
+      // Return an SSE response
+      return new Response(readable, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive"
+        }
+      });
+    } 
+    // For POST requests, handle JSON-RPC
+    else if (request.method === "POST") {
+      try {
+        // Get the JSON-RPC request body
+        const body = await request.json() as any;
+        
+        // Process the JSON-RPC message
+        // Create a one-time transport for handling this request
+        let responseData = null;
+        const transport = {
+          type: "json-rpc",
+          start: async () => {},
+          send: async (message) => {
+            // Store the response to return it when done
+            responseData = message;
+          },
+          close: async () => {}
+        };
+        
+        // Connect and process the request
+        await this.server.connect(transport);
+        
+        // Process the message on the transport
+        if (typeof body === 'object') {
+          // Send the request to the server for processing
+          await transport.send(body);
+        }
+        
+        // Return the JSON response
+        return new Response(JSON.stringify(responseData), {
+          headers: {
+            "Content-Type": "application/json"
+          }
+        });
+      } catch (error) {
+        console.error("Error handling JSON-RPC request:", error);
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          error: {
+            code: -32700,
+            message: "Parse error",
+            data: error.message
+          },
+          id: null
+        }), {
+          status: 400,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        });
+      }
+    }
+    
+    // Method not allowed for other request types
+    return new Response("Method Not Allowed", { status: 405 });
   }
 
   /**
@@ -56,7 +157,7 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
       user: { id: userId },
     };
 
-    return super.onConnect(request);
+    return;
   }
 
   /** Called once per authenticated session. */
@@ -81,7 +182,7 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
 
     // 3. Register each tool with a permissive schema that accepts any JSON.
     tools.forEach((tool) => {
-      const schema = z.object({}).catchall(z.any());
+      const schema = z.object({}).catchall(z.any()) as any;
       this.server.tool(
         tool.name,
         tool.description ?? "",
@@ -102,18 +203,9 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
     this.server.tool(
       "add",
       "Add two numbers on the edge",
-      { a: z.number(), b: z.number() },
+      { a: z.number(), b: z.number() } as any,
       async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] }),
     );
-  }
-
-  /**
-   * Durable Object instance entry point. Delegates all HTTP requests to the
-   * internal `McpServer`, which produces the correct SSE or JSON-RPC responses
-   * according to the MCP 2025-03-26 specification.
-   */
-  async fetch(request: Request): Promise<Response> {
-    return this.server.fetch(request);
   }
 }
 
