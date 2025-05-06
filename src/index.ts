@@ -136,12 +136,16 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
 
-    // SSE and RPC message endpoints - required for Workers AI Playground support
+    // Handle /sse and /sse/message for Workers AI Playground compatibility
     if (url.pathname === "/sse" || url.pathname === "/sse/message") {
-      return MyMCP.serveSSE("/sse").fetch(request, env, ctx);
+      const agentClass = MyMCP as any; // Cast to any to access static methods
+      return agentClass.connect({
+        env,
+        dispatchFetch: (req) => agentClass.prototype.fetch.call({ env }, req, ctx)
+      }).fetch(request);
     }
 
-    // Standard MCP endpoint 
+    // Standard MCP endpoint with support for share tokens
     if (url.pathname === "/mcp") {
       // Check for share token first
       const authHeader = request.headers.get("authorization") || "";
@@ -155,11 +159,20 @@ export default {
         newHeaders.set("x-user-id", share.userId);
         const newReq = new Request(request, { headers: newHeaders });
         
-        return MyMCP.serve("/mcp").fetch(newReq, env, ctx);
+        // Use static connect method with the rewritten request
+        const agentClass = MyMCP as any; // Cast to any to access static methods
+        return agentClass.connect({
+          env,
+          dispatchFetch: (req) => agentClass.prototype.fetch.call({ env }, req, ctx)
+        }).fetch(newReq);
       }
       
-      // Regular MCP request
-      return MyMCP.serve("/mcp").fetch(request, env, ctx);
+      // Regular MCP request using static connect method
+      const agentClass = MyMCP as any; // Cast to any to access static methods
+      return agentClass.connect({
+        env,
+        dispatchFetch: (req) => agentClass.prototype.fetch.call({ env }, req, ctx)
+      }).fetch(request);
     }
 
     // All other requests go to the app handler
