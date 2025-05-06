@@ -6,6 +6,23 @@ import app from "./app";
 import { XanoClient } from "./xano-client";
 import { getShare } from "./share-store";
 
+// Dummy Durable Object class to satisfy wrangler config
+export class MyMCP {
+  private state: DurableObjectState;
+  private env: Env;
+  
+  constructor(state: DurableObjectState, env: Env) {
+    this.state = state;
+    this.env = env;
+    // This is a placeholder, the real functionality is in the main worker
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    // We're not actually using this, all functionality is in the main worker now
+    return new Response("Durable object not used - direct worker implementation is active", { status: 501 });
+  }
+}
+
 // Create a shared MCP server instance
 const server = new McpServer({
   name: "Xano MCP Server",
