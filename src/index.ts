@@ -106,6 +106,15 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
       async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] }),
     );
   }
+
+  /**
+   * Durable Object instance entry point. Delegates all HTTP requests to the
+   * internal `McpServer`, which produces the correct SSE or JSON-RPC responses
+   * according to the MCP 2025-03-26 specification.
+   */
+  async fetch(request: Request): Promise<Response> {
+    return this.server.fetch(request);
+  }
 }
 
 // ---------------------------------------------------------------------------
