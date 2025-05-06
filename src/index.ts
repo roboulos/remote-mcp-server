@@ -23,8 +23,16 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
   public readonly server = new McpServer({
     name: "Xano MCP Server",
     version: "1.0.0",
+    protocolVersion: "2025-03-26" // Specify protocol version per MCP spec
   });
-  public sessionId!: string;
+  public sessionId: string;
+  
+  constructor(state: DurableObjectState, env: Env) {
+    super(state, env);
+    // Generate a unique session ID early in lifecycle
+    this.sessionId = `session-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+    console.log('[MyMCP constructor] Created with sessionId:', this.sessionId);
+  }
 
   private _xano?: XanoClient;
   private get xano() {
@@ -51,21 +59,58 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
       
       console.log('[MCP fetch GET] Session ID for SSE connection:', this.sessionId);
       
-      // Create a proper SSE transport with all required methods
+      // Create a proper SSE transport with all required methods according to MCP 2025-03-26 spec
       const transport = {
         type: "sse",
         start: async () => {
           console.log('[SSE transport.start] Starting SSE transport');
           try {
-            // Send the initial connection event
-            console.log('[SSE transport.start] Sending open event with sessionId:', this.sessionId);
-            await writer.write(new TextEncoder().encode(`event: open
-data: {"sessionId":"${this.sessionId}"}
+            const encoder = new TextEncoder();
+            
+            // 1. Send server_info event (required by MCP spec)
+            console.log('[SSE transport.start] Sending server_info event');
+            await writer.write(encoder.encode(`event: server_info
+data: {"name":"Xano MCP Server","version":"1.0.0","protocolVersion":"2025-03-26"}
 
 `));
-            console.log('[SSE transport.start] Open event sent successfully');
+            console.log('[SSE transport.start] server_info event sent successfully');
+            
+            // 2. Send tools_list event (required by MCP spec)
+            // We'll create a minimal JSON-RPC 2.0 message with our tools
+            const toolsList = {
+              jsonrpc: "2.0",
+              id: "tools-list",
+              result: {
+                tools: [{
+                  name: "add",
+                  description: "Add two numbers on the edge",
+                  parameters: {
+                    type: "object",
+                    properties: {
+                      a: { type: "number" },
+                      b: { type: "number" }
+                    },
+                    required: ["a", "b"]
+                  }
+                }]
+              }
+            };
+            console.log('[SSE transport.start] Sending tools_list event');
+            await writer.write(encoder.encode(`event: tools_list
+data: ${JSON.stringify(toolsList)}
+
+`));
+            console.log('[SSE transport.start] tools_list event sent successfully');
+            
+            // 3. Send ready event (required by MCP spec)
+            console.log('[SSE transport.start] Sending ready event');
+            await writer.write(encoder.encode(`event: ready
+data: {}
+
+`));
+            console.log('[SSE transport.start] ready event sent successfully, client can now proceed');
           } catch (err) {
-            console.error('[SSE transport.start] Error sending open event:', err);
+            console.error('[SSE transport.start] Error sending MCP events:', err);
             throw err;
           }
         },
@@ -223,9 +268,9 @@ data: {"sessionId":"${this.sessionId}"}
     };
     console.log('[MCP onConnect] Session props set, user ID:', userId);
 
-    // Set session ID for tracking
-    this.sessionId = `${authToken.substring(0, 8)}-${userId}-${Date.now()}`;
-    console.log('[MCP onConnect] Generated session ID:', this.sessionId);
+    // The sessionId is now generated in the constructor,
+    // but we'll log it for debugging purposes
+    console.log('[MCP onConnect] Using existing session ID:', this.sessionId);
 
     return;
   }
