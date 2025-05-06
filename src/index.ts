@@ -99,6 +99,14 @@ data: ${JSON.stringify(toolsList)}
 
 `));
             console.log('[SSE transport.start] tools_list event sent successfully');
+            
+            // 3. Send ready event (required by MCP spec for client to proceed)
+            console.log('[SSE transport.start] Sending ready event');
+            await writer.write(encoder.encode(`event: ready
+data: {}
+
+`));
+            console.log('[SSE transport.start] ready event sent successfully, client can now proceed');
           } catch (err) {
             console.error('[SSE transport.start] Error sending initial events:', err);
             throw err;
