@@ -1,5 +1,10 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+// This server implements MCP (Model Context Protocol) over SSE
+// TypeScript types are commented out to avoid import errors
+// Type definitions would be as follows:
+// import type { RequestHandlerExtra, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types";
+
 import { z } from "zod";
 import type { Env } from "./types";
 import app from "./app";
@@ -25,14 +30,7 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
     version: "1.0.0",
     protocolVersion: "2025-03-26" // Specify protocol version per MCP spec
   });
-  public sessionId: string;
-  
-  constructor(state: DurableObjectState, env: Env) {
-    super(state, env);
-    // Generate a unique session ID early in lifecycle
-    this.sessionId = `session-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
-    console.log('[MyMCP constructor] Created with sessionId:', this.sessionId);
-  }
+  public sessionId!: string;
 
   private _xano?: XanoClient;
   private get xano() {
@@ -45,8 +43,10 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
   /**
    * Handle HTTP requests according to the MCP protocol.
    * GET requests use SSE for streaming, POST requests use JSON-RPC.
+   * @param request The incoming request
+   * @param ctx ExecutionContext for managing long-running operations
    */
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, ctx?: ExecutionContext): Promise<Response> {
     console.log('[MCP fetch] Request method:', request.method, 'URL:', request.url);
     console.log('[MCP fetch] Headers:', JSON.stringify(Object.fromEntries([...request.headers.entries()])));
     
@@ -58,6 +58,14 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
       const writer = writable.getWriter();
       
       console.log('[MCP fetch GET] Session ID for SSE connection:', this.sessionId);
+      
+      // If we have an execution context, use it to keep the connection alive
+      if (ctx) {
+        ctx.waitUntil(new Promise((resolve) => {
+          // This promise will keep the request alive until the client disconnects
+          console.log('[MCP fetch GET] Using execution context to keep connection alive');
+        }));
+      }
       
       // Create a proper SSE transport with all required methods according to MCP 2025-03-26 spec
       const transport = {
@@ -76,7 +84,7 @@ data: {"name":"Xano MCP Server","version":"1.0.0","protocolVersion":"2025-03-26"
             console.log('[SSE transport.start] server_info event sent successfully');
             
             // 2. Send tools_list event (required by MCP spec)
-            // We'll create a minimal JSON-RPC 2.0 message with our tools
+            console.log('[SSE transport.start] Sending tools_list event');
             const toolsList = {
               jsonrpc: "2.0",
               id: "tools-list",
@@ -95,7 +103,6 @@ data: {"name":"Xano MCP Server","version":"1.0.0","protocolVersion":"2025-03-26"
                 }]
               }
             };
-            console.log('[SSE transport.start] Sending tools_list event');
             await writer.write(encoder.encode(`event: tools_list
 data: ${JSON.stringify(toolsList)}
 
@@ -151,13 +158,15 @@ data: {}
         });
       }
       
-      // Return an SSE response
+      // Return an SSE response with explicit streaming flags for Cloudflare Workers
       console.log('[MCP fetch GET] Returning SSE response stream');
       return new Response(readable, {
         headers: {
           "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          "Connection": "keep-alive"
+          "Cache-Control": "no-cache, no-transform",
+          "Connection": "keep-alive",
+          "X-Content-Type-Options": "nosniff",
+          "X-Accel-Buffering": "no" // Prevent proxy buffering
         }
       });
     } 
@@ -268,9 +277,9 @@ data: {}
     };
     console.log('[MCP onConnect] Session props set, user ID:', userId);
 
-    // The sessionId is now generated in the constructor,
-    // but we'll log it for debugging purposes
-    console.log('[MCP onConnect] Using existing session ID:', this.sessionId);
+    // Set session ID for tracking
+    this.sessionId = `${authToken.substring(0, 8)}-${userId}-${Date.now()}`;
+    console.log('[MCP onConnect] Generated session ID:', this.sessionId);
 
     return;
   }
@@ -300,30 +309,37 @@ data: {}
       console.log(`[MCP init] Fetched ${tools.length} tool definitions:`, 
         tools.map(t => t.name).join(', '));
     } catch (err) {
-      console.error("[MCP init] Failed to load tool definitions from Xano", err);
+      console.error("[MCP init] Failed to load tools from Xano", err);
     }
 
-    // 3. Register each tool with a permissive schema that accepts any JSON.
-    console.log('[MCP init] Registering tools with server');
+    // 3. Register all available tools for this user.
+    console.log('[MCP init] Registering tools from Xano');
+    const that = this; // Capture 'this' for use inside handlers
+
     tools.forEach((tool) => {
       console.log(`[MCP init] Registering tool: ${tool.name}`);
-      const schema = z.object({}).catchall(z.any()) as any;
+      // Handle tool parameters; the Xano tools might have a different schema structure than expected
+      const parameters = (tool as any).parameters || {};
+      const schema = z.object(parameters) as any;
       this.server.tool(
         tool.name,
         tool.description ?? "",
         schema,
-        async (args) => {
-          console.log(`[Tool ${tool.name}] Executing with args:`, JSON.stringify(args).substring(0, 200));
+        // Using a simplified tool handler signature to avoid TypeScript errors
+        async function (args: any) {
+          console.log(`[Tool ${tool.name}] Executing with args:`, JSON.stringify(args));
           try {
-            const result = await this.xano.executeFunction(
+            // 'this' doesn't work in this context, so we use the captured reference to the class instance
+            const result = await that.xano.executeFunction(
               tool.name,
               args ?? {},
-              this.sessionId,
-              this.props.user.id,
+              that.sessionId,
+              that.props.user.id,
             );
             console.log(`[Tool ${tool.name}] Execution successful, result:`, 
               JSON.stringify(result).substring(0, 200) + (JSON.stringify(result).length > 200 ? '...' : ''));
-            return { content: [{ type: "json", json: result }] } as const;
+            // Make sure the content property is mutable for MCP SDK
+            return { content: [{ type: "json", json: result }] as any } as const;
           } catch (err) {
             console.error(`[Tool ${tool.name}] Execution failed:`, err);
             throw err;
@@ -339,11 +355,14 @@ data: {}
       "add",
       "Add two numbers on the edge",
       { a: z.number(), b: z.number() } as any,
-      async ({ a, b }) => {
+      // Using a simplified tool handler signature to avoid TypeScript errors
+      async (args: { a: number, b: number }) => {
+        const { a, b } = args;
         console.log(`[Tool add] Adding ${a} + ${b}`);
         const result = String(a + b);
         console.log(`[Tool add] Result: ${result}`);
-        return { content: [{ type: "text", text: result }] };
+        // Make sure the content property is mutable for MCP SDK
+        return { content: [{ type: "text", text: result }] as any };
       },
     );
     console.log('[MCP init] Init complete');
