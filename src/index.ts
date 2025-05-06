@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Env } from "./types";
 import app from "./app";
 import { XanoClient } from "./xano-client";
+import { getShare } from "./share-store";
 
 /**
  * Props for authenticated sessions - passed directly via URL parameters
@@ -18,7 +19,7 @@ export interface Props {
  * Minimal MCP agent that delegates tool discovery & execution to Xano.
  */
 export class MyMCP extends McpAgent<Env, unknown, Props> {
-  /** Core MCP server instance exposed on `/sse`. */
+  /** Core MCP server instance exposed on `/mcp`. */
   public readonly server = new McpServer({
     name: "Xano MCP Server",
     version: "1.0.0",
@@ -32,49 +33,34 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
     return this._xano;
   }
 
-  private _initialized = false;
-  private _registeredTools = new Set<string>();
-
   /**
-   * Handle fetch requests to the Durable Object
+   * Extract access token (Bearer) and user ID from headers on first request.
+   * Falls back to query params for legacy clients.
    */
-  async fetch(request: Request) {
-    const url = new URL(request.url);
-    const authToken = url.searchParams.get("auth_token");
-    const userId = url.searchParams.get("user_id");
+  async onConnect(request: Request) {
+    // Prefer Authorization header: "Bearer <token>"
+    const authHeader = request.headers.get("authorization") || "";
+    const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+    const authToken = tokenMatch?.[1] ?? new URL(request.url).searchParams.get("auth_token") ?? "";
+
+    // Custom header for user id, fallback to query param
+    const userId = request.headers.get("x-user-id") ?? new URL(request.url).searchParams.get("user_id") ?? "";
 
     if (!authToken || !userId) {
-      return new Response("Missing required auth_token and user_id parameters", { status: 400 });
+      throw new Error("Missing Authorization Bearer token or X-User-Id header");
     }
 
-    try {
-      // Set props for this session
-      this.props = {
-        accessToken: authToken,
-        user: { id: userId }
-      };
-      
-      // Set the sessionId explicitly - needed for Xano calls
-      this.sessionId = url.searchParams.get("session_id") || crypto.randomUUID();
+    // Set props for this session
+    this.props = {
+      accessToken: authToken,
+      user: { id: userId },
+    };
 
-      // Initialize on first request
-      if (!this._initialized) {
-        await this.init();
-        this._initialized = true;
-      }
-      
-      // Use connect method from the parent McpAgent class
-      return await this.connect(request);
-    } catch (error) {
-      console.error("Error in MyMCP fetch:", error);
-      return new Response(`Internal Server Error: ${error.message}`, { status: 500 });
-    }
+    return super.onConnect(request);
   }
 
-  /** Initialize MCP server with tools */
+  /** Called once per authenticated session. */
   async init() {
-    console.log("Initializing MCP server for session:", this.sessionId);
-    
     // 1. Let Xano know we started a session (best-effort).
     try {
       await this.xano.registerSession(this.sessionId, this.props.user.id, {
@@ -95,47 +81,30 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
 
     // 3. Register each tool with a permissive schema that accepts any JSON.
     tools.forEach((tool) => {
-      if (this._registeredTools.has(tool.name)) {
-        console.log(`Tool ${tool.name} already registered, skipping`);
-        return;
-      }
-      
-      const schema = z.record(z.any());
-      try {
-        this.server.tool(
-          tool.name,
-          tool.description ?? "",
-          schema,
-          async (args) => {
-            const result = await this.xano.executeFunction(
-              tool.name,
-              args ?? {},
-              this.sessionId,
-              this.props.user.id,
-            );
-            return { content: [{ type: "json", json: result }] } as const;
-          },
-        );
-        this._registeredTools.add(tool.name);
-      } catch (err) {
-        console.error(`Error registering tool ${tool.name}:`, err);
-      }
+      const schema = z.object({}).catchall(z.any());
+      this.server.tool(
+        tool.name,
+        tool.description ?? "",
+        schema,
+        async (args) => {
+          const result = await this.xano.executeFunction(
+            tool.name,
+            args ?? {},
+            this.sessionId,
+            this.props.user.id,
+          );
+          return { content: [{ type: "json", json: result }] } as const;
+        },
+      );
     });
 
     // 4. Bonus sample "add" tool (always available).
-    if (!this._registeredTools.has("add")) {
-      try {
-        this.server.tool(
-          "add",
-          "Add two numbers on the edge",
-          { a: z.number(), b: z.number() },
-          async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] }),
-        );
-        this._registeredTools.add("add");
-      } catch (err) {
-        console.error("Error registering add tool:", err);
-      }
-    }
+    this.server.tool(
+      "add",
+      "Add two numbers on the edge",
+      { a: z.number(), b: z.number() },
+      async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] }),
+    );
   }
 }
 
@@ -146,35 +115,31 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
-    
-    // Handle SSE requests for MCP
-    if (url.pathname === "/sse") {
-      // Always use the same DO ID for the same auth token/user ID combo
-      // This ensures we don't create a new DO for reconnections
-      const authToken = url.searchParams.get("auth_token") || "";
-      const userId = url.searchParams.get("user_id") || "";
-      
-      // Create a stable ID based on the auth token and user ID
-      const sessionIdBasis = `${authToken}:${userId}`;
-      // Use a hash of the credentials as the stable DO ID
-      const id = env.MCP_OBJECT.idFromName(sessionIdBasis);
-      
-      // Get a stub for the DO with this ID
-      const stub = env.MCP_OBJECT.get(id);
-      
-      // Generate session ID if not provided
-      if (!url.searchParams.get("session_id")) {
-        url.searchParams.set("session_id", crypto.randomUUID());
-        // Reconstruct the request with the session ID
-        const newRequest = new Request(url, request);
-        // Forward the enhanced request to the DO
-        return stub.fetch(newRequest);
+
+    // Route MCP traffic (both POST & GET) to durable object
+    if (url.pathname === "/mcp") {
+      // Extract bearer (might be share token or raw xano token)
+      const authHeader = request.headers.get("authorization") || "";
+      const bearer = (authHeader.match(/^Bearer\s+(.+)$/i) || [])[1] || url.searchParams.get("auth_token") || "";
+
+      // Check if bearer is a share token
+      const share = await getShare(bearer, env);
+      if (share) {
+        // Rewrite headers so DO sees real Xano token & user id
+        const newHeaders = new Headers(request.headers);
+        newHeaders.set("authorization", `Bearer ${share.xanoToken}`);
+        newHeaders.set("x-user-id", share.userId);
+        const newReq = new Request(request as any, { headers: newHeaders } as RequestInit);
+        const id = env.MCP_OBJECT.idFromName(`${share.xanoToken}:${share.userId}`);
+        return env.MCP_OBJECT.get(id).fetch(newReq);
       }
-      
-      // Forward the request to the DO
-      return stub.fetch(request);
+
+      // Fallback: treat bearer as xano token directly (legacy)
+      const userId = request.headers.get("x-user-id") || url.searchParams.get("user_id") || "";
+      const id = env.MCP_OBJECT.idFromName(`${bearer}:${userId}`);
+      return env.MCP_OBJECT.get(id).fetch(request);
     }
-    
+
     // Everything else goes to the app (home page, health check)
     return app.fetch(request, env, ctx);
   },

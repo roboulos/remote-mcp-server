@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "./types";
+import { generateToken, saveShare, revokeShare } from "./share-store";
 
 // Define app with the imported Env type
 const app = new Hono<{ Bindings: Env }>();
@@ -40,6 +41,27 @@ app.get("/health", (c) => {
     version: "1.0.0",
     timestamp: new Date().toISOString()
   });
+});
+
+// ---------------------------------------------------------------------------
+// API: create-share & revoke-share (dev–in-memory)
+// ---------------------------------------------------------------------------
+
+app.post("/api/create-share", async (c) => {
+  const body = await c.req.json<{ xanoToken: string; userId: string }>();
+  if (!body?.xanoToken || !body?.userId) {
+    return c.json({ error: "xanoToken and userId required" }, 400);
+  }
+  const token = generateToken();
+  await saveShare(token, body.xanoToken, body.userId, c.env);
+  return c.json({ mcpUrl: new URL("/mcp", c.req.url).href, mcpToken: token });
+});
+
+app.post("/api/revoke-share", async (c) => {
+  const body = await c.req.json<{ mcpToken: string }>();
+  if (!body?.mcpToken) return c.json({ error: "mcpToken required" }, 400);
+  await revokeShare(body.mcpToken, c.env);
+  return c.json({ ok: true });
 });
 
 export default app;

@@ -3,6 +3,7 @@ import type { DurableObjectState, DurableObjectNamespace } from '@cloudflare/wor
 // Define the environment interface
 export interface Env {
   MCP_OBJECT: DurableObjectNamespace;
+  SHARE_DO?: DurableObjectNamespace;
   XANO_BASE_URL: string;
 }
 

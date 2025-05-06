@@ -50,37 +50,25 @@ To test with the latest Streamable HTTP transport protocol:
    - **user_id**: Your Xano user ID
 4. The Playground will handle session management automatically using the new protocol
 
-<div align="center">
-  <img src="img/mcp-inspector-sse-config.png" alt="MCP Inspector with the above config" width="600"/>
-</div>
+### Share-Link Flow (desktop IDE & CLI)
 
-<div align="center">
-  <img src="img/mcp-inspector-successful-tool-call.png" alt="MCP Inspector with after a tool call" width="600"/>
-</div>
+For external tools that can’t easily manage Xano bearer tokens you can generate a short-lived **MCP token** (stored in a Durable Object) and share it instead.
 
-## Connect Claude Desktop to your local MCP server
+```bash
+# generate a share-link (24h TTL)
+curl -X POST http://localhost:8787/api/create-share \
+     -d '{"xanoToken":"<YOUR_XANO_TOKEN>","userId":"<USER_ID>"}'
+# → { "mcpUrl": "http://localhost:8787/mcp", "mcpToken": "123e…" }
 
-### Legacy SSE Transport
+# connect from any MCP client
+npx mcp-remote http://localhost:8787/mcp \
+    --header "Authorization=Bearer 123e…"
 
-To connect using the older SSE transport, follow [Anthropic's Quickstart](https://modelcontextprotocol.io/quickstart/user) and within Claude Desktop go to Settings > Developer > Edit Config to find your configuration file.
-
-Open the file in your text editor and replace it with this configuration:
-
-```json
-{
-  "mcpServers": {
-    "math": {
-      "command": "npx",
-      "args": [
-        "mcp-remote",
-        "http://localhost:8787/sse"
-      ]
-    }
-  }
-}
+# revoke the link early
+curl -X POST http://localhost:8787/api/revoke-share -d '{"mcpToken":"123e…"}'
 ```
 
-This will run a local proxy and let Claude talk to your MCP server over HTTP.
+The worker stores the mapping `{mcpToken → xanoToken,userId,expiresAt}` in a Durable Object called `SHARE_DO`.  When you deploy to Cloudflare this ensures the token works across all PoPs.
 
 ### Streamable HTTP Transport (Recommended)
 
@@ -169,20 +157,36 @@ The implementation includes proper support for:
 
 ## Deploy to Cloudflare
 
-1. `npx wrangler kv namespace create OAUTH_KV`
-2. Follow the guidance to add the kv namespace ID to `wrangler.jsonc`
-3. Add your Xano API key to the `XANO_API_KEY` variable in `wrangler.jsonc`
-4. `npm run deploy`
+1. Create the Durable Object binding:
+   ```bash
+   # Only once per account
+   npx wrangler d1 create SHARE_DO
+   ```
+2. Create `wrangler.toml` (see below) with the binding + vars:
+   ```toml
+   name = "remote-mcp-server"
+   main = "./dist/index.js"
 
-## Call your newly deployed remote MCP server from a remote MCP client
+   [[durable_objects]]
+   name = "SHARE_DO"
+   class_name = "ShareDo"
 
-Just like you did above in "Develop locally", run the MCP inspector:
-
-`npx @modelcontextprotocol/inspector@latest`
-
-Then enter the `workers.dev` URL (ex: `worker-name.account-name.workers.dev/sse`) of your Worker in the inspector as the URL of the MCP server to connect to, and click "Connect".
-
-You've now connected to your MCP server from a remote MCP client.
+   [vars]
+   XANO_BASE_URL = "https://x8kd-12345.xano.dev/api" # update
+   
+   [dev]
+   port = 8787
+   ```
+3. Deploy:
+   ```bash
+   npm run deploy  # wrangler deploy
+   ```
+4. Push to GitHub:
+   ```bash
+   git add .
+   git commit -m "feat: share-link flow + durable object"
+   git push origin main
+   ```
 
 ## Connect Claude Desktop to your remote MCP server
 
@@ -215,4 +219,3 @@ In some rare cases it may help to clear the files added to `~/.mcp-auth`
 
 ```bash
 rm -rf ~/.mcp-auth
-```
