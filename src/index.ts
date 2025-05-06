@@ -1,4 +1,3 @@
-import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./types";
@@ -22,6 +21,38 @@ export class MyMCP {
     return new Response("Durable object not used - direct worker implementation is active", { status: 501 });
   }
 }
+
+// Define our tool specs for consistent use
+const TOOL_SPECS = [
+  {
+    name: "add",
+    description: "Add two numbers",
+    parameters: {
+      type: "object",
+      properties: {
+        a: { type: "number" },
+        b: { type: "number" }
+      },
+      required: ["a", "b"]
+    }
+  },
+  {
+    name: "calculate",
+    description: "Calculate using various operations",
+    parameters: {
+      type: "object",
+      properties: {
+        operation: { 
+          type: "string", 
+          enum: ["add", "subtract", "multiply", "divide"] 
+        },
+        a: { type: "number" },
+        b: { type: "number" }
+      },
+      required: ["operation", "a", "b"]
+    }
+  }
+];
 
 // Create a shared MCP server instance
 const server = new McpServer({
@@ -81,6 +112,80 @@ function getXanoClient(env: Env, authToken: string) {
 }
 
 /**
+ * Helper to create an SSE stream with proper MCP protocol events
+ */
+function createSseResponse(ctx: ExecutionContext) {
+  // Create the transform stream for SSE
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  
+  // Set up the events in a waitUntil context
+  if (ctx) {
+    ctx.waitUntil((async () => {
+      try {
+        // 1. Send server_info event
+        await writer.write(encoder.encode(`event: server_info
+data: {"name":"Xano MCP Server","version":"1.0.0","protocolVersion":"2025-03-26"}
+
+`));
+        
+        // 2. Send tools_list event
+        const toolsList = {
+          jsonrpc: "2.0",
+          id: "tools-list",
+          result: { tools: TOOL_SPECS }
+        };
+        await writer.write(encoder.encode(`event: tools_list
+data: ${JSON.stringify(toolsList)}
+
+`));
+        
+        // 3. Send ready event
+        await writer.write(encoder.encode(`event: ready
+data: {}
+
+`));
+        
+        // Keep connection alive with heartbeats
+        const heartbeatInterval = setInterval(async () => {
+          try {
+            await writer.write(encoder.encode(`: heartbeat
+
+`));
+          } catch (error) {
+            clearInterval(heartbeatInterval);
+          }
+        }, 15000);
+        
+        // Clean up after 30 minutes
+        setTimeout(() => {
+          clearInterval(heartbeatInterval);
+          writer.close().catch(console.error);
+        }, 30 * 60 * 1000);
+        
+      } catch (error) {
+        console.error("SSE stream error:", error);
+        try {
+          await writer.close();
+        } catch (closeError) {
+          console.error("Error closing writer:", closeError);
+        }
+      }
+    })());
+  }
+  
+  // Return the Response with the readable stream
+  return new Response(readable, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    }
+  });
+}
+
+/**
  * Main worker entry point
  */
 export default {
@@ -89,73 +194,18 @@ export default {
     
     // SSE and message endpoints for Workers AI Playground compatibility
     if (url.pathname === "/sse" || url.pathname === "/sse/message") {
-      // Extract auth for SSE connections
+      // Extract auth info from the request
       const authToken = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || 
                        url.searchParams.get("auth_token") || "";
       const userId = request.headers.get("x-user-id") || url.searchParams.get("user_id") || "";
-
-      // Use server methods with stream transport
-      if (request.url.includes("/sse/message")) {
+      console.log(`[/sse] Connection from user: ${userId || 'anonymous'}`);
+      
+      // Handle message endpoint
+      if (url.pathname === "/sse/message") {
         return new Response(JSON.stringify({ ok: true }));
       } else {
-        // Create SSE stream response
-        const { readable, writable } = new TransformStream();
-        const writer = writable.getWriter();
-        const encoder = new TextEncoder();
-        
-        // Send server info
-        writer.write(encoder.encode(`event: server_info\ndata: {"name":"Xano MCP Server","version":"1.0.0","protocolVersion":"2025-03-26"}\n\n`));
-        
-        // Send tools list - manually define tools similar to how we registered them
-        const toolsList = { 
-          jsonrpc: "2.0", 
-          id: "tools-list", 
-          result: { 
-            tools: [
-              {
-                name: "add",
-                description: "Add two numbers",
-                parameters: {
-                  type: "object",
-                  properties: {
-                    a: { type: "number" },
-                    b: { type: "number" }
-                  },
-                  required: ["a", "b"]
-                }
-              },
-              {
-                name: "calculate",
-                description: "Calculate using various operations",
-                parameters: {
-                  type: "object",
-                  properties: {
-                    operation: { 
-                      type: "string", 
-                      enum: ["add", "subtract", "multiply", "divide"] 
-                    },
-                    a: { type: "number" },
-                    b: { type: "number" }
-                  },
-                  required: ["operation", "a", "b"]
-                }
-              }
-            ] 
-          }
-        };
-        writer.write(encoder.encode(`event: tools_list\ndata: ${JSON.stringify(toolsList)}\n\n`));
-        
-        // Signal ready
-        writer.write(encoder.encode(`event: ready\ndata: {}\n\n`));
-        
-        // Return SSE response
-        return new Response(readable, {
-          headers: {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
-          }
-        });
+        // Return SSE stream for /sse endpoint
+        return createSseResponse(ctx);
       }
     }
 
@@ -189,64 +239,7 @@ export default {
       
       // Handle MCP protocol based on request method
       if (request.method === "GET") {
-        // SSE stream response for GET requests
-        const { readable, writable } = new TransformStream();
-        const writer = writable.getWriter();
-        const encoder = new TextEncoder();
-        
-        // Send server info
-        writer.write(encoder.encode(`event: server_info\ndata: {"name":"Xano MCP Server","version":"1.0.0","protocolVersion":"2025-03-26"}\n\n`));
-        
-        // Send tools list - manually define tools similar to how we registered them
-        const toolsList = { 
-          jsonrpc: "2.0", 
-          id: "tools-list", 
-          result: { 
-            tools: [
-              {
-                name: "add",
-                description: "Add two numbers",
-                parameters: {
-                  type: "object",
-                  properties: {
-                    a: { type: "number" },
-                    b: { type: "number" }
-                  },
-                  required: ["a", "b"]
-                }
-              },
-              {
-                name: "calculate",
-                description: "Calculate using various operations",
-                parameters: {
-                  type: "object",
-                  properties: {
-                    operation: { 
-                      type: "string", 
-                      enum: ["add", "subtract", "multiply", "divide"] 
-                    },
-                    a: { type: "number" },
-                    b: { type: "number" }
-                  },
-                  required: ["operation", "a", "b"]
-                }
-              }
-            ] 
-          }
-        };
-        writer.write(encoder.encode(`event: tools_list\ndata: ${JSON.stringify(toolsList)}\n\n`));
-        
-        // Signal ready
-        writer.write(encoder.encode(`event: ready\ndata: {}\n\n`));
-        
-        // Return SSE response
-        return new Response(readable, {
-          headers: {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive"
-          }
-        });
+        return createSseResponse(ctx);
       } else {
         // Handle JSON-RPC calls for POST requests
         try {
