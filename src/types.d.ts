@@ -1,9 +1,17 @@
-import type { DurableObjectState, DurableObjectNamespace } from '@cloudflare/workers-types';
+import type { DurableObjectState } from '@cloudflare/workers-types';
+
+// Define a flexible DurableObjectNamespace that works with multiple versions of Cloudflare Worker types
+export interface FlexibleDurableObjectNamespace {
+  idFromName(name: string): { toString(): string };
+  get(id: { toString(): string }): {
+    fetch(input: string | Request | URL, init?: RequestInit): Promise<Response>;
+  };
+}
 
 // Define the environment interface
 export interface Env {
-  MCP_OBJECT: DurableObjectNamespace;
-  SHARE_DO?: DurableObjectNamespace;
+  MCP_OBJECT: FlexibleDurableObjectNamespace;
+  SHARE_DO?: FlexibleDurableObjectNamespace;
   XANO_BASE_URL: string;
 }
 

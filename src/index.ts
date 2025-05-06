@@ -1,10 +1,5 @@
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-// This server implements MCP (Model Context Protocol) over SSE
-// TypeScript types are commented out to avoid import errors
-// Type definitions would be as follows:
-// import type { RequestHandlerExtra, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types";
-
 import { z } from "zod";
 import type { Env } from "./types";
 import app from "./app";
@@ -35,7 +30,8 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
   private _xano?: XanoClient;
   private get xano() {
     if (!this._xano) {
-      this._xano = new XanoClient(this.env.XANO_BASE_URL, this.props.accessToken);
+      // Add type assertion to fix XANO_BASE_URL access
+      this._xano = new XanoClient((this.env as any).XANO_BASE_URL, this.props.accessToken);
     }
     return this._xano;
   }
@@ -56,16 +52,11 @@ export class MyMCP extends McpAgent<Env, unknown, Props> {
       // Create a TransformStream for the SSE response
       const { readable, writable } = new TransformStream();
       const writer = writable.getWriter();
+      const encoder = new TextEncoder();
+
+      // Instead of defining our own types, we'll use type assertions to make the transport compatible
       
       console.log('[MCP fetch GET] Session ID for SSE connection:', this.sessionId);
-      
-      // If we have an execution context, use it to keep the connection alive
-      if (ctx) {
-        ctx.waitUntil(new Promise((resolve) => {
-          // This promise will keep the request alive until the client disconnects
-          console.log('[MCP fetch GET] Using execution context to keep connection alive');
-        }));
-      }
       
       // Create a proper SSE transport with all required methods according to MCP 2025-03-26 spec
       const transport = {
@@ -108,23 +99,16 @@ data: ${JSON.stringify(toolsList)}
 
 `));
             console.log('[SSE transport.start] tools_list event sent successfully');
-            
-            // 3. Send ready event (required by MCP spec)
-            console.log('[SSE transport.start] Sending ready event');
-            await writer.write(encoder.encode(`event: ready
-data: {}
-
-`));
-            console.log('[SSE transport.start] ready event sent successfully, client can now proceed');
           } catch (err) {
-            console.error('[SSE transport.start] Error sending MCP events:', err);
+            console.error('[SSE transport.start] Error sending initial events:', err);
             throw err;
           }
         },
-        send: async (message: string) => {
-          console.log('[SSE transport.send] Sending message:', message.substring(0, 100) + (message.length > 100 ? '...' : ''));
+        send: async (message: any, options?: any) => {
+          const messageStr = JSON.stringify(message);
+          console.log('[SSE transport.send] Sending message:', messageStr.substring(0, 100) + (messageStr.length > 100 ? '...' : ''));
           try {
-            await writer.write(new TextEncoder().encode(`data: ${message}
+            await writer.write(new TextEncoder().encode(`data: ${messageStr}
 
 `));
             console.log('[SSE transport.send] Message sent successfully');
@@ -309,37 +293,31 @@ data: {}
       console.log(`[MCP init] Fetched ${tools.length} tool definitions:`, 
         tools.map(t => t.name).join(', '));
     } catch (err) {
-      console.error("[MCP init] Failed to load tools from Xano", err);
+      console.error("[MCP init] Failed to load tool definitions from Xano", err);
     }
 
-    // 3. Register all available tools for this user.
-    console.log('[MCP init] Registering tools from Xano');
-    const that = this; // Capture 'this' for use inside handlers
-
+    // 3. Register each tool with a permissive schema that accepts any JSON.
+    console.log('[MCP init] Registering tools with server');
     tools.forEach((tool) => {
       console.log(`[MCP init] Registering tool: ${tool.name}`);
-      // Handle tool parameters; the Xano tools might have a different schema structure than expected
-      const parameters = (tool as any).parameters || {};
-      const schema = z.object(parameters) as any;
+      const schema = z.object({}).catchall(z.any()) as any;
       this.server.tool(
         tool.name,
         tool.description ?? "",
         schema,
-        // Using a simplified tool handler signature to avoid TypeScript errors
-        async function (args: any) {
-          console.log(`[Tool ${tool.name}] Executing with args:`, JSON.stringify(args));
+        async (args) => {
+          console.log(`[Tool ${tool.name}] Executing with args:`, JSON.stringify(args).substring(0, 200));
           try {
-            // 'this' doesn't work in this context, so we use the captured reference to the class instance
-            const result = await that.xano.executeFunction(
+            const result = await this.xano.executeFunction(
               tool.name,
               args ?? {},
-              that.sessionId,
-              that.props.user.id,
+              this.sessionId,
+              this.props.user.id,
             );
             console.log(`[Tool ${tool.name}] Execution successful, result:`, 
               JSON.stringify(result).substring(0, 200) + (JSON.stringify(result).length > 200 ? '...' : ''));
-            // Make sure the content property is mutable for MCP SDK
-            return { content: [{ type: "json", json: result }] as any } as const;
+            // Use type assertion to match the expected return type of the MCP SDK
+            return { content: [{ type: "json", json: result }] } as any;
           } catch (err) {
             console.error(`[Tool ${tool.name}] Execution failed:`, err);
             throw err;
@@ -355,14 +333,13 @@ data: {}
       "add",
       "Add two numbers on the edge",
       { a: z.number(), b: z.number() } as any,
-      // Using a simplified tool handler signature to avoid TypeScript errors
-      async (args: { a: number, b: number }) => {
+      async (args: any) => {
         const { a, b } = args;
         console.log(`[Tool add] Adding ${a} + ${b}`);
         const result = String(a + b);
         console.log(`[Tool add] Result: ${result}`);
-        // Make sure the content property is mutable for MCP SDK
-        return { content: [{ type: "text", text: result }] as any };
+        // Use type assertion to match the MCP SDK expected return type
+        return { content: [{ type: "text", text: result }] } as any;
       },
     );
     console.log('[MCP init] Init complete');
@@ -408,21 +385,43 @@ export default {
       const userId = request.headers.get("x-user-id") || url.searchParams.get("user_id") || "";
       console.log('[Worker fetch] Direct bearer token, userId:', userId || 'Missing');
       
-      if (!bearer || !userId) {
-        console.warn('[Worker fetch] Missing bearer token or userId');
+      // For Workers AI Playground, we allow a missing userId if we have a bearer token
+      // This is critical for share token functionality when using the Playground
+      if (!bearer) {
+        console.warn('[Worker fetch] Missing bearer token');
         return new Response(JSON.stringify({
           error: 'Missing required authentication',
-          details: !bearer ? 'No bearer token provided' : 'No user ID provided'
+          details: 'No bearer token provided'
         }), {
           status: 401,
           headers: { 'Content-Type': 'application/json' }
         });
       }
       
+      // Special handling for missing user_id (Workers AI Playground case)
+      // Create a synthetic user ID from the bearer token if needed
+      const effectiveUserId = userId || `share-user-${bearer.substring(0, 8)}`;
+      
+      if (!userId) {
+        console.log('[Worker fetch] Created synthetic userId for Playground:', effectiveUserId);
+      }
+      
       console.log('[Worker fetch] Creating Durable Object ID');
-      const id = env.MCP_OBJECT.idFromName(`${bearer}:${userId}`);
-      console.log('[Worker fetch] Forwarding to Durable Object');
-      return env.MCP_OBJECT.get(id).fetch(request);
+      const id = env.MCP_OBJECT.idFromName(`${bearer}:${effectiveUserId}`);
+      console.log('[Worker fetch] Forwarding to Durable Object with userId:', effectiveUserId);
+      
+      // Ensure the effectiveUserId is passed along
+      const newHeaders = new Headers(request.headers);
+      newHeaders.set("x-user-id", effectiveUserId);
+      
+      // Create a new request with the modified headers
+      const newReq = new Request(request.url, {
+        method: request.method,
+        headers: newHeaders,
+        body: request.body
+      });
+      
+      return env.MCP_OBJECT.get(id).fetch(newReq);
     }
 
     // Everything else goes to the app (home page, health check)
